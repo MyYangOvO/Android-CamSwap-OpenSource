@@ -486,6 +486,16 @@ fun SettingsScreen(viewModel: MainViewModel) {
         // ==================== Advanced Settings ====================
         SettingsSection(title = stringResource(R.string.settings_category_advanced)) {
             SettingsSwitchRow(
+                    icon = Icons.Default.Videocam,
+                    title = stringResource(R.string.settings_real_camera),
+                    subtitle = stringResource(R.string.settings_real_camera_desc),
+                    checked = uiState.useRealCamera,
+                    onCheckedChange = { viewModel.setUseRealCamera(it) }
+            )
+
+            SettingsDivider()
+
+            SettingsSwitchRow(
                     icon = Icons.Outlined.QrCodeScanner,
                     title = stringResource(R.string.settings_qr_scan_compat),
                     subtitle = stringResource(R.string.settings_qr_scan_compat_desc),

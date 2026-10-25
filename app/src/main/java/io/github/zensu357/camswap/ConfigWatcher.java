@@ -66,6 +66,7 @@ public final class ConfigWatcher {
                 + c.getString(ConfigManager.KEY_MEDIA_SOURCE_TYPE, ConfigManager.MEDIA_SOURCE_LOCAL) + "|"
                 + c.getString(ConfigManager.KEY_STREAM_URL, "") + "|"
                 + c.getBoolean(ConfigManager.KEY_ENABLE_QR_SCAN_COMPAT, false) + "|"
+                + c.getBoolean(ConfigManager.KEY_USE_REAL_CAMERA, false) + "|"
                 + c.getString(ConfigManager.KEY_MEDIA_FIT_MODE, "");
     }
 

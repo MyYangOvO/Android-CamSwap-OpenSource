@@ -32,6 +32,8 @@ public class ConfigManager {
 
     // Config Keys
     public static final String KEY_DISABLE_MODULE = "disable_module";
+    // Keep the hooks installed while allowing new camera sessions to use real hardware.
+    public static final String KEY_USE_REAL_CAMERA = "use_real_camera";
     public static final String KEY_PLAY_VIDEO_SOUND = "play_video_sound";
     public static final String KEY_FORCE_PRIVATE_DIR = "force_private_dir";
     public static final String KEY_DISABLE_TOAST = "disable_toast";
@@ -410,6 +412,10 @@ public class ConfigManager {
 
     public void setBoolean(String key, boolean value) {
         updateConfigAndSave(config -> config.put(key, value));
+    }
+
+    public boolean setBooleanChecked(String key, boolean value) {
+        return updateConfigAndSave(config -> config.put(key, value));
     }
 
     public Set<String> getTargetPackages() {

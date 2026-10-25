@@ -259,6 +259,9 @@ public final class Camera2SessionHook {
                 ConfigManager.KEY_ENABLE_QR_SCAN_COMPAT, false);
     }
     public static boolean shouldUseFakeYuvBridgeForPackage(String packageName) {
+        if (VideoManager.getConfig().getBoolean(ConfigManager.KEY_USE_REAL_CAMERA, false)) {
+            return false;
+        }
         return isWhatsAppPackage(packageName) || isLinePackage(packageName)
                 || (packageName != null && isQrScanCompatEnabled());
     }
@@ -468,6 +471,9 @@ public final class Camera2SessionHook {
     }
 
     public void startPlayback() {
+        if (VideoManager.getConfig().getBoolean(ConfigManager.KEY_USE_REAL_CAMERA, false)) {
+            return;
+        }
         refreshQrMediaOnEntryV5();
         if (readerSurface == null && readerSurface1 == null
                 && previewSurface == null && previewSurface1 == null) {
@@ -604,7 +610,8 @@ public final class Camera2SessionHook {
     }
 
     private boolean shouldDriveYuvBridgeNow() {
-        return !isReleasing && yuvBridgeSessionReady;
+        return !isReleasing && yuvBridgeSessionReady
+                && !VideoManager.getConfig().getBoolean(ConfigManager.KEY_USE_REAL_CAMERA, false);
     }
 
     public boolean shouldKeepYuvReaderSurfaceForCurrentPackage(Surface surface) {
@@ -2312,6 +2319,18 @@ public final class Camera2SessionHook {
         yuvDecoder = dec;
         dec.start();
         LogUtil.log("【CS】MediaCodec YUV 解码器已启动");
+    }
+
+    /** Disable synthetic YUV without unhooking methods; real camera needs a new session. */
+    public void suspendYuvDecoderForRealCamera() {
+        invalidateYuvFrameCache();
+        releaseCachedRetriever();
+        MediaCodecYuvDecoder dec = yuvDecoder;
+        if (dec != null) {
+            dec.stop();
+            yuvDecoder = null;
+        }
+        lastYuvFrameWasCodec = false;
     }
 
     /** 媒体源变更时重启解码器（切换视频/旋转等） */

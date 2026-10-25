@@ -20,6 +20,7 @@ import java.net.URL
 
 data class MainUiState(
     val isModuleDisabled: Boolean = false,
+    val useRealCamera: Boolean = false,
     val playVideoSound: Boolean = false,
     val forcePrivateDir: Boolean = false,
     val enableQrScanCompat: Boolean = false,
@@ -54,6 +55,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
     init {
+        configManager.setContext(application.applicationContext)
         loadConfig()
         checkLatestVersion()
     }
@@ -65,6 +67,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update { currentState ->
                 currentState.copy(
                     isModuleDisabled = configManager.getBoolean(ConfigManager.KEY_DISABLE_MODULE, false),
+                    useRealCamera = configManager.getBoolean(ConfigManager.KEY_USE_REAL_CAMERA, false),
                     playVideoSound = configManager.getBoolean(ConfigManager.KEY_PLAY_VIDEO_SOUND, false),
                     forcePrivateDir = configManager.getBoolean(ConfigManager.KEY_FORCE_PRIVATE_DIR, false),
                     enableQrScanCompat = configManager.getBoolean(ConfigManager.KEY_ENABLE_QR_SCAN_COMPAT, false),
@@ -95,6 +98,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             configManager.setBoolean(ConfigManager.KEY_DISABLE_MODULE, disabled)
             _uiState.update { it.copy(isModuleDisabled = disabled) }
+        }
+    }
+
+    fun setUseRealCamera(enabled: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (configManager.setBooleanChecked(ConfigManager.KEY_USE_REAL_CAMERA, enabled)) {
+                _uiState.update { it.copy(useRealCamera = enabled) }
+            } else {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(getApplication<Application>(), R.string.settings_real_camera_save_failed, Toast.LENGTH_LONG).show()
+                }
+            }
         }
     }
 
