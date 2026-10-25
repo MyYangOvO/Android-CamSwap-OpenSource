@@ -53,6 +53,8 @@ public class ConfigManager {
     public static final String REPLACE_MODE_IMAGE = "image";
     public static final String KEY_VIDEO_ROTATION_OFFSET = "video_rotation_offset"; // 视频旋转偏移角度
     public static final String KEY_ENABLE_PHOTO_FAKE = "enable_photo_fake"; // 启用拍照替换 (动态防御)
+    /** Opt-in: supply synthetic Camera2 YUV frames to ordinary QR-scanning apps. */
+    public static final String KEY_ENABLE_QR_SCAN_COMPAT = "enable_qr_scan_compat";
     public static final String KEY_ENABLE_WHATSAPP_CAMERA2_COMPAT = "enable_whatsapp_camera2_compat";
 
     // Stream media source keys

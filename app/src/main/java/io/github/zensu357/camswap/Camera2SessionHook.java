@@ -234,8 +234,14 @@ public final class Camera2SessionHook {
                 || normalized.startsWith("jp.naver.line.android:");
     }
 
+    /** Off by default; works only inside the Xposed-scoped target process. */
+    public static boolean isQrScanCompatEnabled() {
+        return VideoManager.getConfig().getBoolean(
+                ConfigManager.KEY_ENABLE_QR_SCAN_COMPAT, false);
+    }
     public static boolean shouldUseFakeYuvBridgeForPackage(String packageName) {
-        return isWhatsAppPackage(packageName) || isLinePackage(packageName);
+        return isWhatsAppPackage(packageName) || isLinePackage(packageName)
+                || (packageName != null && isQrScanCompatEnabled());
     }
 
     private boolean isVoipActivity() {
@@ -782,7 +788,8 @@ public final class Camera2SessionHook {
                     Surface surface = (Surface) output;
                     boolean isJpeg = isJpegReaderSurface(surface);
                     boolean isYuv = isYuvReaderSurface(surface) || shouldKeepYuvReaderSurfaceForPackage(surface, packageName);
-                    boolean isPreview = (virtualIndex == 0 && !isJpeg);
+                    boolean isPreview = isQrScanCompatEnabled()
+                            ? (!isJpeg && !isYuv) : (virtualIndex == 0 && !isJpeg);
 
                     if (isPreview) {
                         Surface vSurface = createVirtualSurface(virtualIndex++);
@@ -837,7 +844,8 @@ public final class Camera2SessionHook {
                 Surface originalSurface = config.getSurface();
                 boolean isJpeg = isJpegReaderSurface(originalSurface);
                 boolean isYuv = isYuvReaderSurface(originalSurface) || shouldKeepYuvReaderSurfaceForPackage(originalSurface, packageName);
-                boolean isPreview = (virtualIndex == 0 && !isJpeg);
+                boolean isPreview = isQrScanCompatEnabled()
+                        ? (!isJpeg && !isYuv) : (virtualIndex == 0 && !isJpeg);
 
                 if (isPreview) {
                     Surface vSurface = createVirtualSurface(virtualIndex++);
@@ -1328,7 +1336,7 @@ public final class Camera2SessionHook {
         } catch (Throwable ignored) {
         }
         String pkg = getCurrentPackageName();
-        boolean isTargetPkg = isWhatsAppPackage(pkg) || isLinePackage(pkg);
+        boolean isTargetPkg = shouldUseFakeYuvBridgeForPackage(pkg);
         if (!isYuv || !isTargetPkg) {
             stopWhatsAppYuvPump(imageReader);
             return;
@@ -1767,6 +1775,42 @@ public final class Camera2SessionHook {
         byte[] uOut = new byte[cDstW * cDstH];
         byte[] vOut = new byte[cDstW * cDstH];
 
+        if (isQrScanCompatEnabled() && srcW > 0 && srcH > 0
+                && dstW >= 2 && dstH >= 2) {
+            // White letterbox using video-range YUV420 values.
+            Arrays.fill(yOut, (byte) 235);
+            Arrays.fill(uOut, (byte) 128);
+            Arrays.fill(vOut, (byte) 128);
+            float ratio = Math.min((float) dstW / srcW, (float) dstH / srcH);
+            int drawW = Math.max(2, Math.min(dstW & ~1, ((int) (srcW * ratio)) & ~1));
+            int drawH = Math.max(2, Math.min(dstH & ~1, ((int) (srcH * ratio)) & ~1));
+            int offsetX = ((dstW - drawW) / 2) & ~1;
+            int offsetY = ((dstH - drawH) / 2) & ~1;
+            int srcCW = srcW / 2;
+            int srcCH = srcH / 2;
+            if (srcCW > 0 && srcCH > 0) {
+                for (int y = 0; y < drawH; y++) {
+                    int sy = y * srcH / drawH;
+                    for (int x = 0; x < drawW; x++) {
+                        int sx = x * srcW / drawW;
+                        yOut[(offsetY + y) * dstW + offsetX + x] =
+                                decoded.yPlane[sy * srcW + sx];
+                    }
+                }
+                for (int y = 0; y < drawH / 2; y++) {
+                    int sy = y * srcCH / (drawH / 2);
+                    for (int x = 0; x < drawW / 2; x++) {
+                        int sx = x * srcCW / (drawW / 2);
+                        int dst = (offsetY / 2 + y) * cDstW + offsetX / 2 + x;
+                        int src = sy * srcCW + sx;
+                        uOut[dst] = decoded.uPlane[src];
+                        vOut[dst] = decoded.vPlane[src];
+                    }
+                }
+                return new CachedYuvFrame(dstW, dstH, yOut, uOut, vOut,
+                        nowMs, decoded.timestampNs, false);
+            }
+        }
         // 最近邻缩放 Y 平面
         for (int y = 0; y < dstH; y++) {
             int srcY = y * srcH / dstH;
@@ -2317,13 +2361,29 @@ public final class Camera2SessionHook {
         int sourceHeight = source.getHeight();
         if (sourceWidth <= 0 || sourceHeight <= 0) {
             return source;
+        }        if (isQrScanCompatEnabled()) {
+            if (sourceWidth == targetWidth && sourceHeight == targetHeight) return source;
+            Bitmap output = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888);
+            android.graphics.Canvas canvas = new android.graphics.Canvas(output);
+            canvas.drawColor(android.graphics.Color.WHITE);
+            float ratio = Math.min((float) targetWidth / sourceWidth,
+                    (float) targetHeight / sourceHeight);
+            int drawWidth = Math.max(1, Math.round(sourceWidth * ratio));
+            int drawHeight = Math.max(1, Math.round(sourceHeight * ratio));
+            int left = (targetWidth - drawWidth) / 2;
+            int top = (targetHeight - drawHeight) / 2;
+            android.graphics.Rect dst = new android.graphics.Rect(
+                    left, top, left + drawWidth, top + drawHeight);
+            android.graphics.Paint paint = new android.graphics.Paint(
+                    android.graphics.Paint.FILTER_BITMAP_FLAG);
+            canvas.drawBitmap(source, null, dst, paint);
+            source.recycle();
+            return output;
         }
-
         float sourceAspect = (float) sourceWidth / (float) sourceHeight;
         float targetAspect = (float) targetWidth / (float) targetHeight;
-
         Rect cropRect;
-        if (Math.abs(sourceAspect - targetAspect) < 0.001f) {
+if (Math.abs(sourceAspect - targetAspect) < 0.001f) {
             cropRect = new Rect(0, 0, sourceWidth, sourceHeight);
         } else if (sourceAspect > targetAspect) {
             int croppedWidth = Math.max(1, Math.round(sourceHeight * targetAspect));

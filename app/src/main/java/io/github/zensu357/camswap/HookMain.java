@@ -433,8 +433,12 @@ public class HookMain {
         } catch (Throwable ignored) {
         }
         String pkg = camera2Hook.getCurrentPackageName();
-        boolean isLineOrWa = Camera2SessionHook.isWhatsAppPackage(pkg) || Camera2SessionHook.isLinePackage(pkg);
-        boolean shouldInterceptYuv = isYuvReader && isLineOrWa && !camera2Hook.shouldBypassYuvAcquireHook(surface);
+        // Most QR scanners (including CameraX ImageAnalysis) consume YUV_420_888
+        // ImageReader frames, not the RGB preview Surface. Opt-in generic YUV replacement.
+        boolean isYuvTarget = Camera2SessionHook.shouldUseFakeYuvBridgeForPackage(pkg);
+        boolean shouldInterceptYuv = isYuvReader && isYuvTarget
+                && !camera2Hook.shouldBypassYuvAcquireHook(surface)
+                && !HookGuards.shouldBypass(pkg, HookGuards.getCurrentVideoFile());
 
         if (!shouldInterceptYuv) {
             try {
@@ -449,10 +453,13 @@ public class HookMain {
             try {
                 result = acquireFakeWhatsAppYuvImage(imageReader, surface, args, originInvoker);
                 if (result == null) {
+                    // In QR mode, do not expose a real camera frame during decoder startup.
+                    if (Camera2SessionHook.isQrScanCompatEnabled()) return null;
                     result = chain.proceed(args);
                 }
             } catch (Throwable t) {
                 LogUtil.log("【CS】YUV ImageReader 兼容处理失败: " + t);
+                if (Camera2SessionHook.isQrScanCompatEnabled()) return null;
                 result = chain.proceed(args);
             }
         }
