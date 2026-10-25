@@ -1865,24 +1865,13 @@ public final class Camera2SessionHook {
             int srcCW = srcW / 2;
             int srcCH = srcH / 2;
             if (srcCW > 0 && srcCH > 0) {
-                for (int y = 0; y < drawH; y++) {
-                    int sy = y * srcH / drawH;
-                    for (int x = 0; x < drawW; x++) {
-                        int sx = x * srcW / drawW;
-                        yOut[(offsetY + y) * dstW + offsetX + x] =
-                                decoded.yPlane[sy * srcW + sx];
-                    }
-                }
-                for (int y = 0; y < drawH / 2; y++) {
-                    int sy = y * srcCH / (drawH / 2);
-                    for (int x = 0; x < drawW / 2; x++) {
-                        int sx = x * srcCW / (drawW / 2);
-                        int dst = (offsetY / 2 + y) * cDstW + offsetX / 2 + x;
-                        int src = sy * srcCW + sx;
-                        uOut[dst] = decoded.uPlane[src];
-                        vOut[dst] = decoded.vPlane[src];
-                    }
-                }
+                // QR-friendly: area-average downscale (nearest-neighbour drops thin modules).
+                scalePlaneBox(decoded.yPlane, srcW, srcH,
+                        yOut, dstW, offsetX, offsetY, drawW, drawH);
+                scalePlaneBox(decoded.uPlane, srcCW, srcCH,
+                        uOut, cDstW, offsetX / 2, offsetY / 2, drawW / 2, drawH / 2);
+                scalePlaneBox(decoded.vPlane, srcCW, srcCH,
+                        vOut, cDstW, offsetX / 2, offsetY / 2, drawW / 2, drawH / 2);
                 return new CachedYuvFrame(dstW, dstH, yOut, uOut, vOut,
                         nowMs, decoded.timestampNs, false);
             }
@@ -1912,6 +1901,45 @@ public final class Camera2SessionHook {
         }
 
         return new CachedYuvFrame(dstW, dstH, yOut, uOut, vOut, nowMs, decoded.timestampNs, false);
+    }
+
+    /**
+     * Scale one 8-bit plane into a sub-rectangle of dst. Downscaling uses box (area) averaging so
+     * thin QR modules keep their contrast; upscaling falls back to nearest (keeps edges crisp).
+     */
+    private static void scalePlaneBox(byte[] src, int sw, int sh,
+                                      byte[] dst, int dstStride, int dx, int dy, int dw, int dh) {
+        if (src == null || dst == null || sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) {
+            return;
+        }
+        int[] xStart = new int[dw];
+        int[] xEnd = new int[dw];
+        for (int x = 0; x < dw; x++) {
+            int a = (int) ((long) x * sw / dw);
+            int b = (int) ((long) (x + 1) * sw / dw);
+            if (b <= a) b = a + 1;
+            xStart[x] = Math.min(a, sw - 1);
+            xEnd[x] = Math.min(b, sw);
+        }
+        for (int y = 0; y < dh; y++) {
+            int ya = Math.min((int) ((long) y * sh / dh), sh - 1);
+            int yb = (int) ((long) (y + 1) * sh / dh);
+            if (yb <= ya) yb = ya + 1;
+            yb = Math.min(yb, sh);
+            int dstRow = (dy + y) * dstStride + dx;
+            for (int x = 0; x < dw; x++) {
+                int sum = 0;
+                int cnt = 0;
+                for (int yy = ya; yy < yb; yy++) {
+                    int rowBase = yy * sw;
+                    for (int xx = xStart[x]; xx < xEnd[x]; xx++) {
+                        sum += src[rowBase + xx] & 0xff;
+                        cnt++;
+                    }
+                }
+                dst[dstRow + x] = (byte) (cnt > 0 ? (sum + cnt / 2) / cnt : 0);
+            }
+        }
     }
 
     private CachedYuvFrame buildPlaceholderYuvFrame(int width, int height, long nowMs) {
@@ -2667,6 +2695,12 @@ if (Math.abs(sourceAspect - targetAspect) < 0.001f) {
      */
     public boolean pumpDirectYuvFrame(Surface targetSurface) {
         if (targetSurface == null || !targetSurface.isValid() || Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return false;
+        }
+        // QR mode: frames must come ONLY from the fitted/letterboxed bridge path
+        // (acquireFakeWhatsAppYuvImage). This path copies the raw decoded frame to the top-left
+        // corner without scaling, so mixing both makes the scanner see alternating geometries.
+        if (isQrScanCompatEnabled()) {
             return false;
         }
         MediaCodecYuvDecoder dec = yuvDecoder;

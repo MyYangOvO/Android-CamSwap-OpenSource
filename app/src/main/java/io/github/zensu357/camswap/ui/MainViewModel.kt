@@ -22,6 +22,7 @@ data class MainUiState(
     val isModuleDisabled: Boolean = false,
     val playVideoSound: Boolean = false,
     val forcePrivateDir: Boolean = false,
+    val enableQrScanCompat: Boolean = false,
     val disableToast: Boolean = false,
     val enableRandomPlay: Boolean = false,
     val enableMicHook: Boolean = false,
@@ -66,6 +67,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     isModuleDisabled = configManager.getBoolean(ConfigManager.KEY_DISABLE_MODULE, false),
                     playVideoSound = configManager.getBoolean(ConfigManager.KEY_PLAY_VIDEO_SOUND, false),
                     forcePrivateDir = configManager.getBoolean(ConfigManager.KEY_FORCE_PRIVATE_DIR, false),
+                    enableQrScanCompat = configManager.getBoolean(ConfigManager.KEY_ENABLE_QR_SCAN_COMPAT, false),
                     disableToast = configManager.getBoolean(ConfigManager.KEY_DISABLE_TOAST, false),
                     enableRandomPlay = configManager.getBoolean(ConfigManager.KEY_ENABLE_RANDOM_PLAY, false),
                     enableMicHook = configManager.getBoolean(ConfigManager.KEY_ENABLE_MIC_HOOK, false),
@@ -100,6 +102,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             configManager.setBoolean(ConfigManager.KEY_PLAY_VIDEO_SOUND, enabled)
             _uiState.update { it.copy(playVideoSound = enabled) }
+        }
+    }
+
+    fun setEnableQrScanCompat(enabled: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            configManager.setBoolean(ConfigManager.KEY_ENABLE_QR_SCAN_COMPAT, enabled)
+            _uiState.update { it.copy(enableQrScanCompat = enabled) }
         }
     }
 

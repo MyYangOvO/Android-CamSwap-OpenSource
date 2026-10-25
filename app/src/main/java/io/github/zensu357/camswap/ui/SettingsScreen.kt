@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.outlined.FolderSpecial
+import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.NotificationsOff
 import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material3.*
@@ -484,6 +485,16 @@ fun SettingsScreen(viewModel: MainViewModel) {
 
         // ==================== Advanced Settings ====================
         SettingsSection(title = stringResource(R.string.settings_category_advanced)) {
+            SettingsSwitchRow(
+                    icon = Icons.Outlined.QrCodeScanner,
+                    title = stringResource(R.string.settings_qr_scan_compat),
+                    subtitle = stringResource(R.string.settings_qr_scan_compat_desc),
+                    checked = uiState.enableQrScanCompat,
+                    onCheckedChange = { viewModel.setEnableQrScanCompat(it) }
+            )
+
+            SettingsDivider()
+
             SettingsSwitchRow(
                     icon = Icons.Outlined.FolderSpecial,
                     title = stringResource(R.string.settings_force_private_dir),

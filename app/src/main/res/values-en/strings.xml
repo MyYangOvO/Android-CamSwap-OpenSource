@@ -183,4 +183,6 @@
     <string name="root_inject_failed_tip">CameraServer injection pending. Ensure SELinux is Permissive and retry.</string>
     <string name="root_mode_warning_dialog_title">Notice</string>
     <string name="root_mode_warning_dialog_text">This mode may not work on higher Android versions</string>
+    <string name="settings_qr_scan_compat">QR Scan Compatibility</string>
+    <string name="settings_qr_scan_compat_desc">For QR scanner apps: keep full frame (no crop) and use a single frame path</string>
 </resources>
