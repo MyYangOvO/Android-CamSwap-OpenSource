@@ -24,8 +24,10 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK tools
-        uses: android-actions/setup-android@v3
+      - name: Use preinstalled Android SDK
+        run: |
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --version
 
       - name: Install required Android SDK and native toolchain
         run: |
