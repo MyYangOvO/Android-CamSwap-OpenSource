@@ -186,5 +186,5 @@
     <string name="settings_qr_scan_compat">QR Scan Compatibility</string>
     <string name="settings_qr_scan_compat_desc">For QR scanner apps: keep full frame (no crop) and use a single frame path</string>
     <string name="settings_real_camera">Temporarily use real camera</string>
-    <string name="settings_real_camera_desc">Temporarily stop video and image replacement. Close and reopen the target app's camera screen to recreate its camera session; no need to force-stop the app.</string>
+    <string name="settings_real_camera_desc">Temporarily stop video and image replacement. Close and reopen the camera screen in the target app to recreate its camera session; no need to force-stop the app.</string>
 </resources>
