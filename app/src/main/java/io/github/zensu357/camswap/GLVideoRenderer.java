@@ -251,6 +251,13 @@ public class GLVideoRenderer implements SurfaceTexture.OnFrameAvailableListener 
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, mTextureId);
 
         GLES20.glUniformMatrix4fv(muSTMatrixHandle, 1, false, mSTMatrix, 0);
+        // Do not rotate the output quad in fit modes. A fixed viewport plus
+        // UV rotation preserves pixel aspect ratio for both 0 and 90/270 turns.
+        boolean fitGeometryEnabled = (MediaCropUtil.isCenterCrop() || MediaCropUtil.isContain())
+                && mSourceVideoWidth > 0 && mSourceVideoHeight > 0
+                && mSurfaceWidth > 0 && mSurfaceHeight > 0
+                && Math.floorMod(mRotationDegrees, 90) == 0;
+        if (fitGeometryEnabled) Matrix.setIdentityM(mRotMatrix, 0);
         GLES20.glUniformMatrix4fv(muRotMatrixHandle, 1, false, mRotMatrix, 0);
 
         float[] ambientColor = io.github.zensu357.camswap.utils.ScreenColorDetector.INSTANCE.getAmbientColor();
@@ -262,45 +269,30 @@ public class GLVideoRenderer implements SurfaceTexture.OnFrameAvailableListener 
             GLES20.glUniform1f(muAmbientIntensityHandle, ambientIntensity);
         }
 
-        // In 'contain' mode draw the entire original frame without stretching,
-        // and show white bars where source and destination aspect differ.
-        float vx = 1f, vy = 1f;
-        if (MediaCropUtil.isContain() && mSourceVideoWidth > 0 && mSourceVideoHeight > 0
-                && mSurfaceWidth > 0 && mSurfaceHeight > 0) {
-            double srcAspect = (double) mSourceVideoWidth / mSourceVideoHeight;
-            double targetAspect = (double) mSurfaceWidth / mSurfaceHeight;
-            int angle = Math.floorMod(mRotationDegrees, 180);
-            if (angle == 90) srcAspect = 1.0 / srcAspect;
-            float displayX = 1f, displayY = 1f;
-            if (srcAspect > targetAspect) displayY = (float) (targetAspect / srcAspect);
-            else displayX = (float) (srcAspect / targetAspect);
-            vx = angle == 90 ? displayY : displayX;
-            vy = angle == 90 ? displayX : displayY;
+        // Fit modes rotate the sampled media, never the physical output quad.
+        // The old implementation rotated the quad at the shader stage and then
+        // cropped UVs; on portrait surfaces 90/270 degrees can squash the image.
+        float[] fitVertices = GLHelper.VERTICES;
+        float[] fitTexCoords = GLHelper.TEX_COORDS;
+        if (fitGeometryEnabled) {
+            if (MediaCropUtil.isContain()) {
+                fitVertices = MediaCropUtil.fitVerticesForContain(mSourceVideoWidth,
+                        mSourceVideoHeight, mSurfaceWidth, mSurfaceHeight, mRotationDegrees);
+            }
+            fitTexCoords = MediaCropUtil.fitTexCoordsForRotation(mSourceVideoWidth,
+                    mSourceVideoHeight, mSurfaceWidth, mSurfaceHeight, mRotationDegrees,
+                    MediaCropUtil.isCenterCrop());
         }
         mVertexBuffer.position(0);
-        mVertexBuffer.put(new float[]{-vx, -vy, vx, -vy, -vx, vy, vx, vy});
+        mVertexBuffer.put(fitVertices);
         mVertexBuffer.position(0);
         GLES20.glEnableVertexAttribArray(maPositionHandle);
         GLES20.glVertexAttribPointer(maPositionHandle, 2, GLES20.GL_FLOAT, false, 0, mVertexBuffer);
-
-        // Rotation is applied to vertex positions by the shader.  In 90/270 degree
-        // cases, use the reciprocal destination aspect when cropping source UVs.
-        if (MediaCropUtil.isCenterCrop() && mSourceVideoWidth > 0 && mSourceVideoHeight > 0
-                && mSurfaceWidth > 0 && mSurfaceHeight > 0) {
-            float[] b = MediaCropUtil.textureUvBounds(mSourceVideoWidth,
-                    mSourceVideoHeight, mSurfaceWidth, mSurfaceHeight, mRotationDegrees);
-            mTexCoordBuffer.position(0);
-            mTexCoordBuffer.put(new float[] {
-                    b[0], b[1], b[2], b[1], b[0], b[3], b[2], b[3]
-            });
-        } else {
-            mTexCoordBuffer.position(0);
-            mTexCoordBuffer.put(GLHelper.TEX_COORDS);
-        }
+        mTexCoordBuffer.position(0);
+        mTexCoordBuffer.put(fitTexCoords);
         mTexCoordBuffer.position(0);
         GLES20.glEnableVertexAttribArray(maTextureHandle);
         GLES20.glVertexAttribPointer(maTextureHandle, 2, GLES20.GL_FLOAT, false, 0, mTexCoordBuffer);
-
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
 
         mFrameCount++;
