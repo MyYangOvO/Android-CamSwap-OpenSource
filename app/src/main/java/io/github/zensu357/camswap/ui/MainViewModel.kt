@@ -55,7 +55,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
     init {
-        configManager.setContext(application.applicationContext)
         loadConfig()
         checkLatestVersion()
     }
@@ -103,13 +102,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setUseRealCamera(enabled: Boolean) {
         viewModelScope.launch(Dispatchers.IO) {
-            if (configManager.setBooleanChecked(ConfigManager.KEY_USE_REAL_CAMERA, enabled)) {
-                _uiState.update { it.copy(useRealCamera = enabled) }
-            } else {
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(getApplication<Application>(), R.string.settings_real_camera_save_failed, Toast.LENGTH_LONG).show()
-                }
-            }
+            // Only this new option needs immediate cross-process broadcasting.
+            // Use a fresh config snapshot to avoid overwriting recently selected media.
+            val freshConfig = ConfigManager(false)
+            freshConfig.setContext(getApplication<Application>().applicationContext)
+            freshConfig.forceReload()
+            freshConfig.setBoolean(ConfigManager.KEY_USE_REAL_CAMERA, enabled)
+            _uiState.update { it.copy(useRealCamera = enabled) }
         }
     }
 

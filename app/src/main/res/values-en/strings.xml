@@ -185,8 +185,6 @@
     <string name="root_mode_warning_dialog_text">This mode may not work on higher Android versions</string>
     <string name="settings_qr_scan_compat">QR Scan Compatibility</string>
     <string name="settings_qr_scan_compat_desc">For QR scanner apps: keep full frame (no crop) and use a single frame path</string>
-    <string name="media_selection_save_failed">Media selection failed: unable to save configuration. Check storage permissions.</string>
     <string name="settings_real_camera">Temporarily use real camera</string>
-    <string name="settings_real_camera_desc">Stop replacing video/images. Close and reopen the camera screen to recreate the camera session; no need to force-stop the app. Do the same when turning this off.</string>
-    <string name="settings_real_camera_save_failed">Could not save real-camera setting; check storage permissions</string>
+    <string name="settings_real_camera_desc">Temporarily stop video and image replacement. Close and reopen the target app's camera screen to recreate its camera session; no need to force-stop the app.</string>
 </resources>

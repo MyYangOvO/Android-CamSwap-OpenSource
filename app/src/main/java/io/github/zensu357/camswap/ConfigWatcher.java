@@ -27,53 +27,6 @@ public final class ConfigWatcher {
     private final Callback callback;
     private android.database.ContentObserver configObserver;
     private FileObserver configFileObserver;
-    private final Handler refreshHandler = new Handler(Looper.getMainLooper());
-    private static final long SWITCH_SETTLE_MS = 180L;
-    private String lastAppliedMediaKey;
-    private int lastAppliedRotation;
-
-    // ContentObserver, file changes, and broadcasts can report the SAME write.
-    // Coalesce them and reload the latest state once rather than restarting a
-    // decoder three times while another thread is filling the QR cache.
-    private final Runnable applyPendingChange = new Runnable() {
-        @Override public void run() {
-            try {
-                ConfigManager config = VideoManager.getConfig();
-                config.forceReload();
-                String mediaKey = getMediaKey(config);
-                int rotation = config.getInt(ConfigManager.KEY_VIDEO_ROTATION_OFFSET, 0);
-                if (!mediaKey.equals(lastAppliedMediaKey)) {
-                    lastAppliedMediaKey = mediaKey;
-                    lastAppliedRotation = rotation;
-                    VideoManager.updateVideoPath(false);
-                    callback.onMediaSourceChanged();
-                    LogUtil.log("【CS】【HotSwap】媒体源切换已提交");
-                } else if (rotation != lastAppliedRotation) {
-                    lastAppliedRotation = rotation;
-                    callback.onRotationChanged(rotation);
-                }
-            } catch (Throwable error) {
-                LogUtil.log("【CS】【HotSwap】配置同步失败: " + error);
-            }
-        }
-    };
-
-    private static String getMediaKey(ConfigManager c) {
-        return c.getString(ConfigManager.KEY_SELECTED_VIDEO, "") + "|"
-                + c.getString(ConfigManager.KEY_SELECTED_IMAGE, "") + "|"
-                + c.getString(ConfigManager.KEY_REPLACE_MODE, ConfigManager.REPLACE_MODE_VIDEO) + "|"
-                + c.getBoolean(ConfigManager.KEY_FORCE_PRIVATE_DIR, false) + "|"
-                + c.getString(ConfigManager.KEY_MEDIA_SOURCE_TYPE, ConfigManager.MEDIA_SOURCE_LOCAL) + "|"
-                + c.getString(ConfigManager.KEY_STREAM_URL, "") + "|"
-                + c.getBoolean(ConfigManager.KEY_ENABLE_QR_SCAN_COMPAT, false) + "|"
-                + c.getBoolean(ConfigManager.KEY_USE_REAL_CAMERA, false) + "|"
-                + c.getString(ConfigManager.KEY_MEDIA_FIT_MODE, "");
-    }
-
-    private void scheduleRefresh() {
-        refreshHandler.removeCallbacks(applyPendingChange);
-        refreshHandler.postDelayed(applyPendingChange, SWITCH_SETTLE_MS);
-    }
 
     public ConfigWatcher(Callback callback) {
         this.callback = callback;
@@ -88,17 +41,14 @@ public final class ConfigWatcher {
             return; // already initialized
 
         LogUtil.log("【CS】初始化配置监听");
-        // Establish baseline: settings-only broadcasts should not restart video.
-        ConfigManager initial = VideoManager.getConfig();
-        initial.forceReload();
-        lastAppliedMediaKey = getMediaKey(initial);
-        lastAppliedRotation = initial.getInt(ConfigManager.KEY_VIDEO_ROTATION_OFFSET, 0);
         configObserver = new android.database.ContentObserver(new Handler(Looper.getMainLooper())) {
             @Override
             public void onChange(boolean selfChange) {
                 super.onChange(selfChange);
                 LogUtil.log("【CS】Provider 配置变更");
-                scheduleRefresh();
+                VideoManager.getConfig().forceReload();
+                VideoManager.updateVideoPath(false);
+                callback.onMediaSourceChanged();
             }
         };
 
@@ -121,7 +71,11 @@ public final class ConfigWatcher {
                     public void onEvent(int event, String path) {
                         if (path != null && path.endsWith(".json")) {
                             LogUtil.log("【CS】文件变更: " + path);
-                            scheduleRefresh();
+                            new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                                VideoManager.getConfig().forceReload();
+                                VideoManager.updateVideoPath(false);
+                                callback.onMediaSourceChanged();
+                            }, 200);
                         }
                     }
                 };
@@ -170,15 +124,53 @@ public final class ConfigWatcher {
         if (configJson == null)
             return;
 
-        // A broadcast is a second signal for the same persisted change. The
-        // provider/file reload in applyPendingChange wins over any old broadcast.
+        // Snapshot old values
+        String oldVideo = config.getString(ConfigManager.KEY_SELECTED_VIDEO, "");
+        String oldImage = config.getString(ConfigManager.KEY_SELECTED_IMAGE, "");
+        String oldMode = config.getString(ConfigManager.KEY_REPLACE_MODE, ConfigManager.REPLACE_MODE_VIDEO);
+        boolean oldFpd = config.getBoolean(ConfigManager.KEY_FORCE_PRIVATE_DIR, false);
+        boolean oldRealCamera = config.getBoolean(ConfigManager.KEY_USE_REAL_CAMERA, false);
+        int oldRotation = config.getInt(ConfigManager.KEY_VIDEO_ROTATION_OFFSET, 0);
+        // Stream config snapshots
+        String oldSourceType = config.getString(ConfigManager.KEY_MEDIA_SOURCE_TYPE, ConfigManager.MEDIA_SOURCE_LOCAL);
+        String oldStreamUrl = config.getString(ConfigManager.KEY_STREAM_URL, "");
+
         config.updateConfigFromJSON(configJson);
-        if (config.getBoolean(ConfigManager.KEY_FORCE_PRIVATE_DIR, false)
-                && !getMediaKey(config).equals(lastAppliedMediaKey)
-                && intent.hasExtra(IpcContract.EXTRA_VIDEO_BUNDLE)) {
+
+        // Snapshot new values
+        String newVideo = config.getString(ConfigManager.KEY_SELECTED_VIDEO, "");
+        String newImage = config.getString(ConfigManager.KEY_SELECTED_IMAGE, "");
+        String newMode = config.getString(ConfigManager.KEY_REPLACE_MODE, ConfigManager.REPLACE_MODE_VIDEO);
+        boolean newFpd = config.getBoolean(ConfigManager.KEY_FORCE_PRIVATE_DIR, false);
+        boolean newRealCamera = config.getBoolean(ConfigManager.KEY_USE_REAL_CAMERA, false);
+        int newRotation = config.getInt(ConfigManager.KEY_VIDEO_ROTATION_OFFSET, 0);
+        // Stream config new values
+        String newSourceType = config.getString(ConfigManager.KEY_MEDIA_SOURCE_TYPE, ConfigManager.MEDIA_SOURCE_LOCAL);
+        String newStreamUrl = config.getString(ConfigManager.KEY_STREAM_URL, "");
+
+        // Always extract video from Binder if attached
+        if (intent.hasExtra(IpcContract.EXTRA_VIDEO_BUNDLE)) {
             extractVideoFromBinder(intent);
         }
-        scheduleRefresh();
+
+        boolean mediaChanged = !oldVideo.equals(newVideo) ||
+                !oldImage.equals(newImage) ||
+                !oldMode.equals(newMode) ||
+                (oldFpd != newFpd) ||
+                (oldRealCamera != newRealCamera) ||
+                !oldSourceType.equals(newSourceType) ||
+                !oldStreamUrl.equals(newStreamUrl);
+
+        if (mediaChanged) {
+            VideoManager.updateVideoPath(false);
+            callback.onMediaSourceChanged();
+            LogUtil.log("【CS】配置更新: 媒体源变化，重启播放器");
+        } else if (oldRotation != newRotation) {
+            LogUtil.log("【CS】配置更新: 旋转 " + newRotation + "°");
+            callback.onRotationChanged(newRotation);
+        } else {
+            LogUtil.log("【CS】配置更新: 无变化");
+        }
     }
 
     private void extractVideoFromBinder(Intent intent) {

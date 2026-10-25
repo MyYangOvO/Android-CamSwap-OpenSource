@@ -185,8 +185,6 @@
     <string name="root_mode_warning_dialog_text">该模式在高版本安卓可能不起作用</string>
     <string name="settings_qr_scan_compat">二维码扫描兼容模式</string>
     <string name="settings_qr_scan_compat_desc">扫码类应用专用：保持画面完整不裁切，并统一送帧路径</string>
-    <string name="media_selection_save_failed">媒体选择失败：配置未能保存，请检查存储权限</string>
     <string name="settings_real_camera">临时使用真实相机</string>
-    <string name="settings_real_camera_desc">停止替换视频/图片。切换后请退出并重新进入目标应用的相机页面，使相机会话重新创建；无需划掉应用后台。关闭后同样需要重新打开相机。</string>
-    <string name="settings_real_camera_save_failed">真实相机设置保存失败，请检查存储权限</string>
+    <string name="settings_real_camera_desc">暂时停止视频和图片替换。切换后退出并重新进入目标应用的相机页面以重新创建相机会话，无需划掉整个 App 后台。</string>
 </resources>

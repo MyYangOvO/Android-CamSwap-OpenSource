@@ -56,6 +56,9 @@ public class LineElsaHandler implements ICameraHandler {
                     method.setAccessible(true);
                     Api101Runtime.requireModule().hook(method).intercept(chain -> {
                         Object[] args = HookUtils.toArgs(chain.getArgs());
+                        if (HookGuards.useRealCamera()) {
+                            return chain.proceed(args);
+                        }
                         try {
                             if (args.length > 0 && args[0] instanceof SurfaceTexture) {
                                 SurfaceTexture st = (SurfaceTexture) args[0];
@@ -86,6 +89,9 @@ public class LineElsaHandler implements ICameraHandler {
                     method.setAccessible(true);
                     Api101Runtime.requireModule().hook(method).intercept(chain -> {
                         Object[] args = HookUtils.toArgs(chain.getArgs());
+                        if (HookGuards.useRealCamera()) {
+                            return chain.proceed(args);
+                        }
                         try {
                             if (args.length >= 2 && args[0] instanceof byte[] && HookMain.data_buffer != null) {
                                 byte[] buffer = (byte[]) args[0];
@@ -117,6 +123,9 @@ public class LineElsaHandler implements ICameraHandler {
                     method.setAccessible(true);
                     Api101Runtime.requireModule().hook(method).intercept(chain -> {
                         Object[] args = HookUtils.toArgs(chain.getArgs());
+                        if (HookGuards.useRealCamera()) {
+                            return chain.proceed(args);
+                        }
                         try {
                             if (args.length >= 2 && args[0] instanceof byte[] && HookMain.data_buffer != null) {
                                 byte[] buffer = (byte[]) args[0];
@@ -152,6 +161,9 @@ public class LineElsaHandler implements ICameraHandler {
                     method.setAccessible(true);
                     Api101Runtime.requireModule().hook(method).intercept(chain -> {
                         Object[] args = HookUtils.toArgs(chain.getArgs());
+                        if (HookGuards.useRealCamera()) {
+                            return chain.proceed(args);
+                        }
                         byte[] fakeNv21 = getLatestNv21Data();
                         if (fakeNv21 != null && fakeNv21.length > 0) {
                             LogUtil.log("【CS】【LINE Elsa】成功劫持 b.v (Image->NV21) 转换，返回虚拟视频帧 (" + fakeNv21.length + " bytes)");
@@ -198,6 +210,9 @@ public class LineElsaHandler implements ICameraHandler {
                         method.setAccessible(true);
                         Api101Runtime.requireModule().hook(method).intercept(chain -> {
                             Object[] args = HookUtils.toArgs(chain.getArgs());
+                        if (HookGuards.useRealCamera()) {
+                            return chain.proceed(args);
+                        }
                             try {
                                 Object imageProxy = args[0];
                                 if (imageProxy != null) {
@@ -277,6 +292,9 @@ public class LineElsaHandler implements ICameraHandler {
                         method.setAccessible(true);
                         Api101Runtime.requireModule().hook(method).intercept(chain -> {
                             Object[] args = HookUtils.toArgs(chain.getArgs());
+                        if (HookGuards.useRealCamera()) {
+                            return chain.proceed(args);
+                        }
                             LogUtil.log("【CS】【LINE Elsa】捕获到 SurfaceProvider.onSurfaceRequested: " + args[0]);
                             return chain.proceed(args);
                         });

@@ -133,13 +133,11 @@ public class HookMain {
             configWatcher = new ConfigWatcher(new ConfigWatcher.Callback() {
                 @Override
                 public void onMediaSourceChanged() {
-                    // Never restart fake video into an active session after requesting
-                    // the real camera. A previously replaced camera session must be
-                    // reopened by the target app to restore its original surfaces.
-                    if (getConfig().getBoolean(ConfigManager.KEY_USE_REAL_CAMERA, false)) {
+                    if (HookGuards.useRealCamera()) {
+                        // Keep hooks installed; real camera takes effect when the target
+                        // closes and reopens its camera session.
                         playerManager.releaseAllRenderers();
                         camera2Hook.suspendYuvDecoderForRealCamera();
-                        LogUtil.log("【CS】真实相机模式已启用；请在目标应用重新打开相机");
                     } else {
                         playerManager.restartAll();
                         camera2Hook.restartYuvDecoderForSourceChange();
@@ -433,6 +431,11 @@ public class HookMain {
             return chain.proceed(args);
         }
 
+        // A genuine camera image must never be replaced in temporary real-camera mode.
+        if (HookGuards.useRealCamera()) {
+            return chain.proceed(args);
+        }
+
         ImageReader imageReader = (ImageReader) thisObject;
         Surface surface = imageReader.getSurface();
         Object result;
@@ -502,9 +505,6 @@ public class HookMain {
     }
 
     private Object maybeReplaceJpegImage(ImageReader imageReader, Surface surface, Object result) {
-        if (getConfig().getBoolean(ConfigManager.KEY_USE_REAL_CAMERA, false)) {
-            return result;
-        }
         if (!(result instanceof Image)) {
             return result;
         }

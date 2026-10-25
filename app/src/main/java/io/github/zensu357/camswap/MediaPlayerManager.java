@@ -88,15 +88,15 @@ public final class MediaPlayerManager {
      */
     void initCamera2Players(Surface readerSurface, Surface readerSurface1,
             Surface previewSurface, Surface previewSurface1) {
-        synchronized (mediaLock) {
-            MediaSourceDescriptor source = getMediaSource();
-            if (source.isStream()) {
-                initCamera2PlayersStream(readerSurface, readerSurface1,
-                        previewSurface, previewSurface1, source);
-            } else {
-                initCamera2PlayersLocal(readerSurface, readerSurface1,
-                        previewSurface, previewSurface1);
-            }
+
+        MediaSourceDescriptor source = getMediaSource();
+
+        if (source.isStream()) {
+            initCamera2PlayersStream(readerSurface, readerSurface1,
+                    previewSurface, previewSurface1, source);
+        } else {
+            initCamera2PlayersLocal(readerSurface, readerSurface1,
+                    previewSurface, previewSurface1);
         }
     }
 
@@ -425,29 +425,27 @@ public final class MediaPlayerManager {
 
     /** Release Camera2 players and renderers (called from onOpened). */
     void releaseCamera2Resources() {
-        synchronized (mediaLock) {
-            releaseStreamBackend();
-            GLVideoRenderer.releaseSafely(c2_renderer);
-            c2_renderer = null;
-            GLVideoRenderer.releaseSafely(c2_renderer_1);
-            c2_renderer_1 = null;
-            GLVideoRenderer.releaseSafely(c2_reader_renderer);
-            c2_reader_renderer = null;
-            GLVideoRenderer.releaseSafely(c2_reader_renderer_1);
-            c2_reader_renderer_1 = null;
-            stopAndRelease(c2_player);
-            c2_player = null;
-            stopAndRelease(c2_reader_player_1);
-            c2_reader_player_1 = null;
-            stopAndRelease(c2_reader_player);
-            c2_reader_player = null;
-            stopAndRelease(c2_player_1);
-            c2_player_1 = null;
-            lastC2ReaderSurface = null;
-            lastC2ReaderSurface1 = null;
-            lastC2PreviewSurface = null;
-            lastC2PreviewSurface1 = null;
-        }
+        releaseStreamBackend();
+        GLVideoRenderer.releaseSafely(c2_renderer);
+        c2_renderer = null;
+        GLVideoRenderer.releaseSafely(c2_renderer_1);
+        c2_renderer_1 = null;
+        GLVideoRenderer.releaseSafely(c2_reader_renderer);
+        c2_reader_renderer = null;
+        GLVideoRenderer.releaseSafely(c2_reader_renderer_1);
+        c2_reader_renderer_1 = null;
+        stopAndRelease(c2_player);
+        c2_player = null;
+        stopAndRelease(c2_reader_player_1);
+        c2_reader_player_1 = null;
+        stopAndRelease(c2_reader_player);
+        c2_reader_player = null;
+        stopAndRelease(c2_player_1);
+        c2_player_1 = null;
+        lastC2ReaderSurface = null;
+        lastC2ReaderSurface1 = null;
+        lastC2PreviewSurface = null;
+        lastC2PreviewSurface1 = null;
     }
 
     private void stopAndRelease(MediaPlayer player) {

@@ -9,6 +9,10 @@ public final class HookGuards {
     private HookGuards() {
     }
 
+    public static boolean useRealCamera() {
+        return VideoManager.getConfig().getBoolean(ConfigManager.KEY_USE_REAL_CAMERA, false);
+    }
+
     public static File resolveVideoFile(boolean forceRandom) {
         VideoManager.updateVideoPath(forceRandom);
         return getCurrentVideoFile();
@@ -25,8 +29,7 @@ public final class HookGuards {
     // ---- Legacy overload (File-based) — kept for compatibility ----
 
     public static boolean shouldBypass(String packageName, File videoFile) {
-        if (VideoManager.getConfig().getBoolean(ConfigManager.KEY_DISABLE_MODULE, false)
-                || VideoManager.getConfig().getBoolean(ConfigManager.KEY_USE_REAL_CAMERA, false)) {
+        if (VideoManager.getConfig().getBoolean(ConfigManager.KEY_DISABLE_MODULE, false) || useRealCamera()) {
             return true;
         }
         // Stream mode: delegate to MediaSourceDescriptor-based check
@@ -39,8 +42,7 @@ public final class HookGuards {
     // ---- New overload (MediaSourceDescriptor-based) ----
 
     public static boolean shouldBypass(String packageName, MediaSourceDescriptor source) {
-        if (VideoManager.getConfig().getBoolean(ConfigManager.KEY_DISABLE_MODULE, false)
-                || VideoManager.getConfig().getBoolean(ConfigManager.KEY_USE_REAL_CAMERA, false)) {
+        if (VideoManager.getConfig().getBoolean(ConfigManager.KEY_DISABLE_MODULE, false) || useRealCamera()) {
             return true;
         }
         HookMain.need_to_show_toast = !VideoManager.getConfig().getBoolean(ConfigManager.KEY_DISABLE_TOAST, false);
@@ -57,8 +59,7 @@ public final class HookGuards {
     }
 
     public static boolean shouldBypassMissingVideo(String packageName, File videoFile) {
-        if (VideoManager.getConfig().getBoolean(ConfigManager.KEY_DISABLE_MODULE, false)
-                || VideoManager.getConfig().getBoolean(ConfigManager.KEY_USE_REAL_CAMERA, false)) {
+        if (VideoManager.getConfig().getBoolean(ConfigManager.KEY_DISABLE_MODULE, false) || useRealCamera()) {
             return true;
         }
 

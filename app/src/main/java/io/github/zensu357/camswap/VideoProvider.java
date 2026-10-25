@@ -86,9 +86,7 @@ public class VideoProvider extends ContentProvider {
         }
         String lastPathSegment = uri.getLastPathSegment();
         if (IpcContract.PATH_CONFIG.equals(lastPathSegment)) {
-            // The UI writes through a different ConfigManager instance. Ignore the
-            // 1s reload throttle: a hot switch must observe the committed file NOW.
-            configManager.forceReload();
+            configManager.reload();
             // If configData is still empty after reload, try force reload once more
             org.json.JSONObject data = configManager.getConfigData();
             if (data == null || data.length() == 0) {
@@ -148,8 +146,7 @@ public class VideoProvider extends ContentProvider {
         if (!isCallerAllowed()) {
             throw new FileNotFoundException("Caller not allowed");
         }
-        // openFile may run milliseconds after the UI chooses another video.
-        configManager.forceReload();
+        configManager.reload();
 
         String lastSeg = uri.getLastPathSegment();
 
@@ -285,7 +282,7 @@ public class VideoProvider extends ContentProvider {
             denied.putBoolean(IpcContract.EXTRA_CHANGED, false);
             return denied;
         }
-        configManager.forceReload();
+        configManager.reload();
         boolean changed = false;
 
         try {

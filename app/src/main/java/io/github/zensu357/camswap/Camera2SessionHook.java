@@ -83,23 +83,6 @@ public final class Camera2SessionHook {
     public final Map<Surface, int[]> surfaceSizeMap = new ConcurrentHashMap<>();
     public final Map<Long, int[]> surfaceNativeSizeMap = new ConcurrentHashMap<>();
     private final Map<Surface, CachedYuvFrame> cachedYuvFrameMap = new ConcurrentHashMap<>();
-    private final Object yuvCacheGenerationLock = new Object();
-    private volatile long yuvCacheGeneration = 0L;
-
-    private void invalidateYuvFrameCache() {
-        synchronized (yuvCacheGenerationLock) {
-            yuvCacheGeneration++;
-            cachedYuvFrameMap.clear();
-        }
-    }
-
-    private void putYuvFrameIfCurrent(Surface surface, CachedYuvFrame frame, long generation) {
-        synchronized (yuvCacheGenerationLock) {
-            if (generation == yuvCacheGeneration) {
-                cachedYuvFrameMap.put(surface, frame);
-            }
-        }
-    }
     private final Map<Surface, FakeYuvBridge> fakeYuvBridgeMap = new ConcurrentHashMap<>();
     private final Set<Surface> internalFakeYuvReaderSurfaces = Collections
             .newSetFromMap(new ConcurrentHashMap<Surface, Boolean>());
@@ -259,9 +242,6 @@ public final class Camera2SessionHook {
                 ConfigManager.KEY_ENABLE_QR_SCAN_COMPAT, false);
     }
     public static boolean shouldUseFakeYuvBridgeForPackage(String packageName) {
-        if (VideoManager.getConfig().getBoolean(ConfigManager.KEY_USE_REAL_CAMERA, false)) {
-            return false;
-        }
         return isWhatsAppPackage(packageName) || isLinePackage(packageName)
                 || (packageName != null && isQrScanCompatEnabled());
     }
@@ -431,27 +411,21 @@ public final class Camera2SessionHook {
     /** Refresh analysis source on the NEXT scan entry; host process may stay running.
      * This does not switch frames while the scan screen is in use.
      */
-    private String getQrMediaKey() {
-        ConfigManager config = VideoManager.getConfig();
-        return config.getString(ConfigManager.KEY_MEDIA_SOURCE_TYPE, "local") + "|"
-                + config.getString(ConfigManager.KEY_REPLACE_MODE, "video") + "|"
-                + config.getString(ConfigManager.KEY_SELECTED_VIDEO, "") + "|"
-                + config.getString(ConfigManager.KEY_SELECTED_IMAGE, "") + "|"
-                + config.getBoolean(ConfigManager.KEY_FORCE_PRIVATE_DIR, false) + "|"
-                + config.getString(ConfigManager.KEY_STREAM_URL, "") + "|"
-                + config.getBoolean(ConfigManager.KEY_ENABLE_QR_SCAN_COMPAT, false) + "|"
-                + config.getString(ConfigManager.KEY_MEDIA_FIT_MODE, "");
-    }
-
     private void refreshQrMediaOnEntryV5() {
         try {
             VideoManager.getConfig().forceReload();
             VideoManager.updateVideoPath(false);
-            String key = getQrMediaKey();
+            ConfigManager config = VideoManager.getConfig();
+            String key = config.getString(ConfigManager.KEY_MEDIA_SOURCE_TYPE, "local") + "|"
+                    + config.getString(ConfigManager.KEY_REPLACE_MODE, "video") + "|"
+                    + config.getString(ConfigManager.KEY_SELECTED_VIDEO, "") + "|"
+                    + config.getString(ConfigManager.KEY_SELECTED_IMAGE, "") + "|"
+                    + config.getBoolean(ConfigManager.KEY_FORCE_PRIVATE_DIR, false) + "|"
+                    + config.getString(ConfigManager.KEY_STREAM_URL, "");
             if (!key.equals(qrLastScanMediaKeyV5)) {
                 boolean hadPreviousSource = qrLastScanMediaKeyV5 != null;
                 qrLastScanMediaKeyV5 = key;
-                invalidateYuvFrameCache();
+                cachedYuvFrameMap.clear();
                 releaseCachedRetriever();
                 lastYuvFrameWasFallback = true;
                 lastYuvFrameWasCodec = false;
@@ -471,9 +445,6 @@ public final class Camera2SessionHook {
     }
 
     public void startPlayback() {
-        if (VideoManager.getConfig().getBoolean(ConfigManager.KEY_USE_REAL_CAMERA, false)) {
-            return;
-        }
         refreshQrMediaOnEntryV5();
         if (readerSurface == null && readerSurface1 == null
                 && previewSurface == null && previewSurface1 == null) {
@@ -610,8 +581,7 @@ public final class Camera2SessionHook {
     }
 
     private boolean shouldDriveYuvBridgeNow() {
-        return !isReleasing && yuvBridgeSessionReady
-                && !VideoManager.getConfig().getBoolean(ConfigManager.KEY_USE_REAL_CAMERA, false);
+        return !isReleasing && yuvBridgeSessionReady;
     }
 
     public boolean shouldKeepYuvReaderSurfaceForCurrentPackage(Surface surface) {
@@ -1381,7 +1351,7 @@ public final class Camera2SessionHook {
         closeFakeYuvBridges();
         internalFakeYuvReaderSurfaces.clear();
         sessionKeptYuvSurfaces.clear();
-        invalidateYuvFrameCache();
+        cachedYuvFrameMap.clear();
         releaseCachedRetriever();
         lastYuvFrameWasFallback = true;
         lastYuvFrameWasCodec = false;
@@ -1533,19 +1503,18 @@ public final class Camera2SessionHook {
             }
 
             long now = SystemClock.elapsedRealtime();
-            long generation = yuvCacheGeneration;
             CachedYuvFrame cached = cachedYuvFrameMap.get(targetSurface);
             boolean needRefresh = false;
             if (cached == null || cached.width != width || cached.height != height) {
                 cached = buildPlaceholderYuvFrame(width, height, now);
-                putYuvFrameIfCurrent(targetSurface, cached, generation);
+                cachedYuvFrameMap.put(targetSurface, cached);
                 needRefresh = true;
             }
             long refreshInterval = computeYuvRefreshInterval(width, height);
             if (cached.isPlaceholder || now - cached.generatedAtMs >= refreshInterval || needRefresh) {
                 CachedYuvFrame refreshed = buildCachedYuvFrame(targetSurface, width, height, now);
                 if (refreshed != null) {
-                    putYuvFrameIfCurrent(targetSurface, refreshed, generation);
+                    cachedYuvFrameMap.put(targetSurface, refreshed);
                 }
             }
         } catch (Throwable t) {
@@ -1609,7 +1578,6 @@ public final class Camera2SessionHook {
         }
 
         // 缓存由泵线程 preRefreshYuvCache 预先刷新，这里只读取
-        long generation = yuvCacheGeneration;
         CachedYuvFrame cached = cachedYuvFrameMap.get(targetSurface);
         long now = SystemClock.elapsedRealtime();
         long refreshInterval = computeYuvRefreshInterval(width, height);
@@ -1622,15 +1590,13 @@ public final class Camera2SessionHook {
             CachedYuvFrame refreshed = buildCachedYuvFrame(targetSurface, width, height, now);
             if (refreshed != null) {
                 cached = refreshed;
-                putYuvFrameIfCurrent(targetSurface, refreshed, generation);
+                cachedYuvFrameMap.put(targetSurface, refreshed);
             } else if (cached == null || cached.width != width || cached.height != height) {
                 cached = buildPlaceholderYuvFrame(width, height, now);
-                putYuvFrameIfCurrent(targetSurface, cached, generation);
+                cachedYuvFrameMap.put(targetSurface, cached);
             }
         }
-        // If source switched while the frame was being prepared, discard it.
-        // The pump will deliver a frame from the new source on its next tick.
-        if (cached == null || generation != yuvCacheGeneration) {
+        if (cached == null) {
             return null;
         }
         try {
@@ -2305,6 +2271,9 @@ public final class Camera2SessionHook {
 
     /** 启动或重启 MediaCodec YUV 解码器 */
     private void startOrRestartYuvDecoder() {
+        if (HookGuards.useRealCamera()) {
+            return;
+        }
         if (!VideoManager.hasUsableMediaSource()) {
             return;
         }
@@ -2321,10 +2290,11 @@ public final class Camera2SessionHook {
         LogUtil.log("【CS】MediaCodec YUV 解码器已启动");
     }
 
-    /** Disable synthetic YUV without unhooking methods; real camera needs a new session. */
+    /** Stop synthetic QR frames while retaining hooks for the next camera session. */
     public void suspendYuvDecoderForRealCamera() {
-        invalidateYuvFrameCache();
+        cachedYuvFrameMap.clear();
         releaseCachedRetriever();
+        lastYuvFrameWasFallback = true;
         MediaCodecYuvDecoder dec = yuvDecoder;
         if (dec != null) {
             dec.stop();
@@ -2335,10 +2305,8 @@ public final class Camera2SessionHook {
 
     /** 媒体源变更时重启解码器（切换视频/旋转等） */
     public void restartYuvDecoderForSourceChange() {
-        // The QR pump may still be building a frame from the previous video.
-        // Generation-guarded cache writes prevent it from resurrecting old data.
-        invalidateYuvFrameCache();
-        qrLastScanMediaKeyV5 = getQrMediaKey();
+        // CS_QR_HOTSWAP_V5: invalidate previous YUV generation.
+        cachedYuvFrameMap.clear();
         releaseCachedRetriever();
         lastYuvFrameWasFallback = true;
         MediaCodecYuvDecoder dec = yuvDecoder;
@@ -2461,11 +2429,9 @@ public final class Camera2SessionHook {
         }
         try {
             String currentPath = VideoManager.getCurrentVideoPath();
-            String retrieverKey = currentPath != null ? currentPath
-                    : "provider:" + VideoManager.getConfig().getString(ConfigManager.KEY_SELECTED_VIDEO, "");
-            // Provider mode also has a stable identity. Explicit switch events
-            // release the retriever even if the provider URI stays unchanged.
-            if (cachedRetriever == null || !retrieverKey.equals(cachedRetrieverPath)) {
+            // 复用已有 retriever，只在路径变化时重新创建
+            if (cachedRetriever == null || cachedRetrieverPath == null
+                    || !cachedRetrieverPath.equals(currentPath)) {
                 releaseCachedRetriever();
                 MediaMetadataRetriever retriever = new MediaMetadataRetriever();
                 android.os.ParcelFileDescriptor pfd = VideoManager.getVideoPFD();
@@ -2482,7 +2448,7 @@ public final class Camera2SessionHook {
                     retriever.setDataSource(currentPath);
                 }
                 cachedRetriever = retriever;
-                cachedRetrieverPath = retrieverKey;
+                cachedRetrieverPath = currentPath;
             }
 
             long positionUs = HookMain.playerManager.getCamera2PlaybackPositionMs() * 1000L;
