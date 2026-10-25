@@ -27,6 +27,8 @@ data class MainUiState(
     val enableMicHook: Boolean = false,
     val micHookMode: String = "mute",
     val enablePhotoFake: Boolean = false,
+    val photoRotationOffset: Int = 0,
+    val mediaFitMode: String = "original",
 
     val notificationControlEnabled: Boolean = false,
     val overlayControlEnabled: Boolean = false,
@@ -68,7 +70,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     enableRandomPlay = configManager.getBoolean(ConfigManager.KEY_ENABLE_RANDOM_PLAY, false),
                     enableMicHook = configManager.getBoolean(ConfigManager.KEY_ENABLE_MIC_HOOK, false),
                     micHookMode = configManager.getString(ConfigManager.KEY_MIC_HOOK_MODE, ConfigManager.MIC_MODE_MUTE),
-                    enablePhotoFake = configManager.getBoolean(ConfigManager.KEY_ENABLE_PHOTO_FAKE, false),
+                                         enablePhotoFake = configManager.getBoolean(ConfigManager.KEY_ENABLE_PHOTO_FAKE, false),
+                     photoRotationOffset = configManager.getInt(ConfigManager.KEY_PHOTO_ROTATION_OFFSET, 0),
+                     mediaFitMode = configManager.getString(ConfigManager.KEY_MEDIA_FIT_MODE, "original"),
                     notificationControlEnabled = configManager.getBoolean(ConfigManager.KEY_NOTIFICATION_CONTROL_ENABLED, false),
                     overlayControlEnabled = configManager.getBoolean(ConfigManager.KEY_OVERLAY_CONTROL_ENABLED, false),
                     targetAppsCount = configManager.targetPackages.size,
@@ -152,6 +156,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             configManager.setBoolean(ConfigManager.KEY_OVERLAY_CONTROL_ENABLED, enabled)
             _uiState.update { it.copy(overlayControlEnabled = enabled) }
+        }
+    }
+
+    /** Save a photo-only rotation; preview and QR orientation do not change. */
+    fun setPhotoRotationOffset(degrees: Int) {
+        if (degrees !in listOf(0, 90, 180, 270)) return
+        // Update screen immediately, then persist in the background.
+        _uiState.update { it.copy(photoRotationOffset = degrees) }
+        viewModelScope.launch(Dispatchers.IO) {
+            configManager.setInt(ConfigManager.KEY_PHOTO_ROTATION_OFFSET, degrees)
+        }
+    }
+
+    fun setMediaFitMode(mode: String) {
+        if (mode !in listOf("original", "center_crop", "contain")) return
+        _uiState.update { it.copy(mediaFitMode = mode) }
+        viewModelScope.launch(Dispatchers.IO) {
+            configManager.setString(ConfigManager.KEY_MEDIA_FIT_MODE, mode)
         }
     }
 

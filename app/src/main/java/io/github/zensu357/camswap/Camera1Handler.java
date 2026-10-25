@@ -243,6 +243,9 @@ public class Camera1Handler implements ICameraHandler {
                 HookMain.playerManager.mplayer1.setDataSource(VideoManager.getCurrentVideoPath());
             }
             HookMain.playerManager.mplayer1.prepare();
+            if (renderer != null) renderer.setSourceVideoSize(
+                    HookMain.playerManager.mplayer1.getVideoWidth(),
+                    HookMain.playerManager.mplayer1.getVideoHeight());
         } catch (Exception e) {
             LogUtil.log("【CS】mplayer1 prepare 异常: " + e.toString());
         }
@@ -308,6 +311,9 @@ public class Camera1Handler implements ICameraHandler {
                 LogUtil.log("【CS】【Camera1】mMediaPlayer 使用本地数据源: " + path);
             }
             HookMain.playerManager.mMediaPlayer.prepare();
+            if (renderer != null) renderer.setSourceVideoSize(
+                    HookMain.playerManager.mMediaPlayer.getVideoWidth(),
+                    HookMain.playerManager.mMediaPlayer.getVideoHeight());
             LogUtil.log("【CS】【Camera1】mMediaPlayer 准备就绪，开始播放");
         } catch (Exception e) {
             LogUtil.e("【CS】【Camera1】mMediaPlayer prepare 异常: " + e.getMessage(), e);
@@ -346,7 +352,7 @@ public class Camera1Handler implements ICameraHandler {
         byte[] nv21 = HookMain.data_buffer;
         byte[] jpegData = null;
 
-        if (nv21 != null && nv21.length >= 1) {
+        if (nv21 != null && nv21.length >= 1 && !MediaCropUtil.isCenterCrop() && !MediaCropUtil.isContain()) {
             try {
                 android.graphics.YuvImage yuvImage = new android.graphics.YuvImage(nv21,
                         android.graphics.ImageFormat.NV21, HookMain.mwidth, HookMain.mhight, null);
@@ -367,7 +373,7 @@ public class Camera1Handler implements ICameraHandler {
             jpegData = buildBlackFallbackJpeg();
         }
 
-        return jpegData;
+        return PhotoRotationUtil.rotateJpegIfNeeded(jpegData);
     }
 
     private void ensureCameraSize(Camera camera) {
@@ -427,7 +433,11 @@ public class Camera1Handler implements ICameraHandler {
             retriever.release();
 
             if (frame != null) {
-                if (frame.getWidth() != HookMain.mwidth || frame.getHeight() != HookMain.mhight) {
+                if (MediaCropUtil.isCenterCrop()) {
+                    frame = MediaCropUtil.centerCrop(frame, HookMain.mwidth, HookMain.mhight);
+                } else if (MediaCropUtil.isContain()) {
+                    frame = MediaCropUtil.contain(frame, HookMain.mwidth, HookMain.mhight);
+                } else if (frame.getWidth() != HookMain.mwidth || frame.getHeight() != HookMain.mhight) {
                     android.graphics.Bitmap scaled = android.graphics.Bitmap.createScaledBitmap(
                             frame, HookMain.mwidth, HookMain.mhight, true);
                     frame.recycle();

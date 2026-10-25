@@ -1775,7 +1775,44 @@ public final class Camera2SessionHook {
         byte[] uOut = new byte[cDstW * cDstH];
         byte[] vOut = new byte[cDstW * cDstH];
 
-        if (isQrScanCompatEnabled() && srcW > 0 && srcH > 0
+        // Center-crop each YUV420 plane. Keep crop origins/sizes even for chroma alignment.
+        if (MediaCropUtil.isCenterCrop() && srcW >= 2 && srcH >= 2 &&
+                dstW >= 2 && dstH >= 2 && (dstW & 1) == 0 && (dstH & 1) == 0) {
+            int cropW = srcW & ~1;
+            int cropH = srcH & ~1;
+            if ((long) cropW * dstH > (long) cropH * dstW) {
+                cropW = Math.max(2, ((int) ((long) cropH * dstW / dstH)) & ~1);
+            } else {
+                cropH = Math.max(2, ((int) ((long) cropW * dstH / dstW)) & ~1);
+            }
+            cropW = Math.min(srcW & ~1, cropW);
+            cropH = Math.min(srcH & ~1, cropH);
+            int cropX = ((srcW - cropW) / 2) & ~1;
+            int cropY = ((srcH - cropH) / 2) & ~1;
+            for (int y = 0; y < dstH; y++) {
+                int sy = Math.min(srcH - 1, cropY + (int) ((long) y * cropH / dstH));
+                for (int x = 0; x < dstW; x++) {
+                    int sx = Math.min(srcW - 1, cropX + (int) ((long) x * cropW / dstW));
+                    yOut[y * dstW + x] = decoded.yPlane[sy * srcW + sx];
+                }
+            }
+            int srcCW = srcW / 2;
+            for (int y = 0; y < cDstH; y++) {
+                int sy = Math.min(srcH / 2 - 1, cropY / 2 +
+                        (int) ((long) y * (cropH / 2) / cDstH));
+                for (int x = 0; x < cDstW; x++) {
+                    int sx = Math.min(srcW / 2 - 1, cropX / 2 +
+                            (int) ((long) x * (cropW / 2) / cDstW));
+                    int dst = y * cDstW + x;
+                    int src = sy * srcCW + sx;
+                    uOut[dst] = decoded.uPlane[src];
+                    vOut[dst] = decoded.vPlane[src];
+                }
+            }
+            return new CachedYuvFrame(dstW, dstH, yOut, uOut, vOut,
+                    nowMs, decoded.timestampNs, false);
+        }
+        if ((isQrScanCompatEnabled() || MediaCropUtil.isContain()) && srcW > 0 && srcH > 0
                 && dstW >= 2 && dstH >= 2) {
             // White letterbox using video-range YUV420 values.
             Arrays.fill(yOut, (byte) 235);
@@ -2209,12 +2246,27 @@ public final class Camera2SessionHook {
             targetHeight = 720;
         }
 
-        Bitmap frame = captureFrameForStill(targetWidth, targetHeight);
+        int captureWidth = targetWidth;
+        int captureHeight = targetHeight;
+        if (MediaCropUtil.isCenterCrop() || MediaCropUtil.isContain()) {
+            int photoAngle = VideoManager.getConfig().getInt("photo_rotation_offset", 0);
+            if (Math.floorMod(photoAngle, 180) == 90) {
+                captureWidth = targetHeight;
+                captureHeight = targetWidth;
+            }
+        }
+        Bitmap frame = captureFrameForStill(captureWidth, captureHeight);
         if (frame == null) {
             LogUtil.log("【CS】无法获取可用静态帧");
             return null;
         }
 
+        frame = PhotoRotationUtil.rotateBitmapIfNeeded(frame);
+        if (MediaCropUtil.isCenterCrop()) {
+            frame = MediaCropUtil.centerCrop(frame, targetWidth, targetHeight);
+        } else if (MediaCropUtil.isContain()) {
+            frame = MediaCropUtil.contain(frame, targetWidth, targetHeight);
+        }
         return compressBitmapToJpeg(frame, maxBytes);
     }
 
@@ -2361,7 +2413,10 @@ public final class Camera2SessionHook {
         int sourceHeight = source.getHeight();
         if (sourceWidth <= 0 || sourceHeight <= 0) {
             return source;
-        }        if (isQrScanCompatEnabled()) {
+        }        if (MediaCropUtil.isContain()) {
+            return MediaCropUtil.contain(source, targetWidth, targetHeight);
+        }
+        if (isQrScanCompatEnabled() && !MediaCropUtil.isCenterCrop()) {
             if (sourceWidth == targetWidth && sourceHeight == targetHeight) return source;
             Bitmap output = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888);
             android.graphics.Canvas canvas = new android.graphics.Canvas(output);

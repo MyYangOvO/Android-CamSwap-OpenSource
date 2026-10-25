@@ -380,6 +380,7 @@ public final class MediaPlayerManager {
                 player.setDataSource(getVideoPath());
             }
             player.prepare();
+            if (renderer != null) renderer.setSourceVideoSize(player.getVideoWidth(), player.getVideoHeight());
             player.start();
         } catch (Exception e) {
             LogUtil.log("【CS】重启 " + tag + " 失败: " + android.util.Log.getStackTraceString(e));
@@ -546,6 +547,9 @@ public final class MediaPlayerManager {
 
             int videoW = player.getVideoWidth();
             int videoH = player.getVideoHeight();
+            if (rendererRef[0] != null) {
+                rendererRef[0].setSourceVideoSize(videoW, videoH);
+            }
             int duration = player.getDuration();
 
             player.start();

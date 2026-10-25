@@ -72,6 +72,8 @@ fun SettingsScreen(viewModel: MainViewModel) {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
     val coroutineScope = rememberCoroutineScope()
+    var showPhotoRotationDialog by remember { mutableStateOf(false) }
+    var showMediaFitDialog by remember { mutableStateOf(false) }
     val exportLogLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/zip")
     ) { uri: Uri? ->
@@ -92,6 +94,78 @@ fun SettingsScreen(viewModel: MainViewModel) {
         }
     }
 
+    if (showPhotoRotationDialog) {
+        AlertDialog(
+            onDismissRequest = { showPhotoRotationDialog = false },
+            title = { Text("拍照旋转角度") },
+            text = {
+                Column {
+                    listOf(0, 90, 180, 270).forEach { degrees ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth()
+                                .clickable {
+                                    viewModel.setPhotoRotationOffset(degrees)
+                                    showPhotoRotationDialog = false
+                                }
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = uiState.photoRotationOffset == degrees,
+                                onClick = {
+                                    viewModel.setPhotoRotationOffset(degrees)
+                                    showPhotoRotationDialog = false
+                                }
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text(if (degrees == 0) "0°（不额外旋转）" else "$degrees°（顺时针）")
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showPhotoRotationDialog = false }) { Text("关闭") }
+            }
+        )
+    }
+    if (showMediaFitDialog) {
+        AlertDialog(
+            onDismissRequest = { showMediaFitDialog = false },
+            title = { Text("视频 / 图片画面适配") },
+            text = {
+                Column {
+                    listOf(
+                        "original" to "原模式（保持旧处理方式）",
+                        "center_crop" to "居中裁切（等比例铺满）",
+                        "contain" to "完整显示（等比例留白）"
+                    ).forEach { (mode, label) ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth()
+                                .clickable {
+                                    viewModel.setMediaFitMode(mode)
+                                    showMediaFitDialog = false
+                                }
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = uiState.mediaFitMode == mode,
+                                onClick = {
+                                    viewModel.setMediaFitMode(mode)
+                                    showMediaFitDialog = false
+                                }
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(label)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showMediaFitDialog = false }) { Text("关闭") }
+            }
+        )
+    }
     Column(
             modifier =
                     Modifier.fillMaxSize()
@@ -102,6 +176,24 @@ fun SettingsScreen(viewModel: MainViewModel) {
 
         // ==================== General Settings ====================
         SettingsSection(title = stringResource(R.string.settings_category_general)) {
+            SettingsClickRow(
+                icon = Icons.Default.Image,
+                title = "照片旋转修正",
+                subtitle = "当前 ${uiState.photoRotationOffset}° · 仅影响替换的拍照输出",
+                onClick = { showPhotoRotationDialog = true }
+            )
+            SettingsDivider()
+            SettingsClickRow(
+                icon = Icons.Default.Videocam,
+                title = "图片 / 视频画面适配",
+                subtitle = when (uiState.mediaFitMode) {
+                    "center_crop" -> "居中裁切 · 不拉伸，边缘可能被裁掉"
+                    "contain" -> "完整显示 · 不拉伸，可能有白边"
+                    else -> "原模式 · 沿用此前的画面处理"
+                },
+                onClick = { showMediaFitDialog = true }
+            )
+            SettingsDivider()
 
             SettingsSwitchRow(
                     icon = Icons.Default.NotificationsActive,
