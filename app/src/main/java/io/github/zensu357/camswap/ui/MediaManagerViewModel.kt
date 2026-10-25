@@ -7,6 +7,10 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import android.widget.Toast
+import io.github.zensu357.camswap.R
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -16,6 +20,7 @@ import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicLong
 import io.github.zensu357.camswap.ConfigManager
 import io.github.zensu357.camswap.IpcContract
 import io.github.zensu357.camswap.utils.ImageToVideoConverter
@@ -55,8 +60,13 @@ class MediaManagerViewModel(application: Application) : AndroidViewModel(applica
 
     private val mediaDir = File(android.os.Environment.getExternalStorageDirectory().absolutePath + "/DCIM/Camera1/")
     private val configManager = ConfigManager()
+    private val selectionMutex = Mutex()
+    private val mediaStateRevision = AtomicLong()
 
     init {
+        // Without a Context ConfigManager.save() cannot notify hooked target apps.
+        // The management UI must publish each committed selection immediately.
+        configManager.setContext(application.applicationContext)
         if (!mediaDir.exists()) {
             mediaDir.mkdirs()
         }
@@ -84,6 +94,7 @@ class MediaManagerViewModel(application: Application) : AndroidViewModel(applica
     }
 
     fun loadMedia() {
+        val revision = mediaStateRevision.incrementAndGet()
         viewModelScope.launch(Dispatchers.IO) {
             _uiState.update { it.copy(isLoading = true) }
             
@@ -157,13 +168,13 @@ class MediaManagerViewModel(application: Application) : AndroidViewModel(applica
                  String.format(Locale.getDefault(), "%02d:%02d", m, s)
             }
 
-            configManager.reload()
+            configManager.forceReload()
             val selectedVideo = configManager.getString(ConfigManager.KEY_SELECTED_VIDEO, null)
             val selectedImage = configManager.getString(ConfigManager.KEY_SELECTED_IMAGE, null)
             val selectedAudio = configManager.getString(ConfigManager.KEY_SELECTED_AUDIO, null)
 
             _uiState.update {
-                it.copy(
+                if (revision != mediaStateRevision.get()) it else it.copy(
                     videos = videoItems,
                     images = imageItems,
                     audios = audioItems,
@@ -180,43 +191,52 @@ class MediaManagerViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
+    private fun showSaveFailure() {
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            Toast.makeText(getApplication<Application>(), R.string.media_selection_save_failed, Toast.LENGTH_LONG).show()
+        }
+    }
+
     fun selectMedia(item: MediaItem) {
         viewModelScope.launch(Dispatchers.IO) {
-            when (item.type) {
-                MediaType.VIDEO -> {
-                    configManager.reload()
-                    val currentSelected = configManager.getString(ConfigManager.KEY_SELECTED_VIDEO, null)
-
-                    if (currentSelected == item.name) {
-                        configManager.setString(ConfigManager.KEY_SELECTED_VIDEO, "")
-                        _uiState.update { it.copy(selectedVideoName = null) }
-                    } else {
-                        configManager.setString(ConfigManager.KEY_SELECTED_VIDEO, item.name)
+            // Serialize taps: only a fully committed selection may update the UI.
+            selectionMutex.withLock {
+                configManager.forceReload()
+                val key = when (item.type) {
+                    MediaType.VIDEO -> ConfigManager.KEY_SELECTED_VIDEO
+                    MediaType.IMAGE -> ConfigManager.KEY_SELECTED_IMAGE
+                    MediaType.AUDIO -> ConfigManager.KEY_SELECTED_AUDIO
+                }
+                val selected = configManager.getString(key, "")
+                // Tapping the selected media again must NOT clear it and unexpectedly
+                // make VideoProvider fall back to Cam.mp4.
+                if (selected == item.name) return@withLock
+                if (!item.file.isFile || item.file.length() <= 0L) {
+                    android.util.Log.e("CamSwap", "Cannot select missing/empty media: ${item.file}")
+                    showSaveFailure()
+                    return@withLock
+                }
+                if (!configManager.setStringChecked(key, item.name)) {
+                    android.util.Log.e("CamSwap", "Media selection was not saved: ${item.name}")
+                    showSaveFailure()
+                    return@withLock
+                }
+                // Invalidate older asynchronous media-list loads that may have read
+                // the previous selection before this save completed.
+                mediaStateRevision.incrementAndGet()
+                when (item.type) {
+                    MediaType.VIDEO -> {
                         _uiState.update { it.copy(selectedVideoName = item.name) }
+                        try {
+                            getApplication<Application>().contentResolver.notifyChange(IpcContract.URI_VIDEO, null)
+                        } catch (e: Exception) {
+                            android.util.Log.w("CamSwap", "Video update notify failed", e)
+                        }
                     }
-                    try {
-                        getApplication<Application>().contentResolver.notifyChange(
-                            IpcContract.URI_CONFIG, null)
-                    } catch (_: Exception) {}
-                    loadMedia()
+                    MediaType.IMAGE -> _uiState.update { it.copy(selectedImageName = item.name) }
+                    MediaType.AUDIO -> _uiState.update { it.copy(selectedAudioName = item.name) }
                 }
-                MediaType.IMAGE -> {
-                    configManager.setString(ConfigManager.KEY_SELECTED_IMAGE, item.name)
-                    _uiState.update { it.copy(selectedImageName = item.name) }
-                }
-                MediaType.AUDIO -> {
-                    configManager.reload()
-                    val currentSelected = configManager.getString(ConfigManager.KEY_SELECTED_AUDIO, null)
-
-                    if (currentSelected == item.name) {
-                        configManager.setString(ConfigManager.KEY_SELECTED_AUDIO, "")
-                        _uiState.update { it.copy(selectedAudioName = null) }
-                    } else {
-                        configManager.setString(ConfigManager.KEY_SELECTED_AUDIO, item.name)
-                        _uiState.update { it.copy(selectedAudioName = item.name) }
-                    }
-                    loadMedia()
-                }
+                android.util.Log.i("CamSwap", "Media selection committed: ${item.type} ${item.name}")
             }
         }
     }
@@ -278,12 +298,17 @@ class MediaManagerViewModel(application: Application) : AndroidViewModel(applica
                         if (convertedFile != null && convertedFile.exists() && convertedFile.length() > 0) {
                             android.util.Log.d("CamSwap", "转换成功: ${convertedFile.name}, 大小: ${convertedFile.length()}")
                             // Auto-select the converted video
-                            configManager.setString(ConfigManager.KEY_SELECTED_VIDEO, convertedFile.name)
-                            _uiState.update { it.copy(selectedVideoName = convertedFile.name) }
-                            try {
-                                context.contentResolver.notifyChange(
-                                    IpcContract.URI_CONFIG, null)
-                            } catch (_: Exception) {}
+                            selectionMutex.withLock {
+                                if (configManager.setStringChecked(ConfigManager.KEY_SELECTED_VIDEO, convertedFile.name)) {
+                                    mediaStateRevision.incrementAndGet()
+                                    _uiState.update { it.copy(selectedVideoName = convertedFile.name) }
+                                    try {
+                                        context.contentResolver.notifyChange(IpcContract.URI_VIDEO, null)
+                                    } catch (_: Exception) {}
+                                } else {
+                                    showSaveFailure()
+                                }
+                            }
                         } else {
                             android.util.Log.e("CamSwap", "图片转视频失败! convertedFile=$convertedFile")
                         }

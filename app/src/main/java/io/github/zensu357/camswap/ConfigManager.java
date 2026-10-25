@@ -84,7 +84,9 @@ public class ConfigManager {
     private volatile long lastLoadedTime = 0;
     private volatile android.content.Context context; // Context for remote loading
     private volatile boolean skipProviderReload = false;
-    private final Object configWriteLock = new Object();
+    // UI ViewModels and VideoProvider live in the same host process, but have separate
+    // ConfigManager instances. Serialize their read/modify/write operations.
+    private static final Object CONFIG_WRITE_LOCK = new Object();
 
     public ConfigManager() {
         this(true);
@@ -136,16 +138,44 @@ public class ConfigManager {
         configData.set(snapshot != null ? snapshot : new JSONObject());
     }
 
-    private void updateConfigAndSave(ConfigMutation mutation) {
-        synchronized (configWriteLock) {
-            try {
-                JSONObject updated = copyConfig(getConfigSnapshot());
-                mutation.apply(updated);
-                setConfigSnapshot(updated);
-                save(updated);
-            } catch (JSONException e) {
-                e.printStackTrace();
+    /** Read the authoritative file without the normal 1s reload throttle. */
+    private JSONObject readLatestConfigForWrite() {
+        File file = new File(DEFAULT_CONFIG_DIR, CONFIG_FILE_NAME);
+        if (!file.exists()) {
+            return copyConfig(getConfigSnapshot());
+        }
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
+            StringBuilder body = new StringBuilder();
+            char[] buffer = new char[4096];
+            int count;
+            while ((count = reader.read(buffer)) != -1) {
+                body.append(buffer, 0, count);
             }
+            return new JSONObject(body.toString());
+        } catch (Exception e) {
+            // Never overwrite unreadable or invalid config with a stale in-memory snapshot.
+            io.github.zensu357.camswap.utils.LogUtil.log(
+                    "【CS】【ConfigSave】读取最新配置失败，拒绝覆盖: " + e);
+            return null;
+        }
+    }
+
+    private boolean updateConfigAndSave(ConfigMutation mutation) {
+        synchronized (CONFIG_WRITE_LOCK) {
+            JSONObject updated = readLatestConfigForWrite();
+            if (updated == null) return false;
+            try {
+                mutation.apply(updated);
+                JSONObject previous = getConfigSnapshot();
+                // Broadcast serialization in save() needs the newly committed snapshot.
+                setConfigSnapshot(updated);
+                if (save(updated)) return true;
+                setConfigSnapshot(previous);
+            } catch (JSONException e) {
+                io.github.zensu357.camswap.utils.LogUtil.log("【CS】【ConfigSave】配置写入失败: " + e);
+            }
+            return false;
         }
     }
 
@@ -433,32 +463,41 @@ public class ConfigManager {
         updateConfigAndSave(config -> config.put(key, value));
     }
 
+    /** Allows the media UI to report success only after the config reached disk. */
+    public boolean setStringChecked(String key, String value) {
+        return updateConfigAndSave(config -> config.put(key, value));
+    }
+
     private void save() {
         save(getConfigSnapshot());
     }
 
-    private void save(JSONObject snapshot) {
+    private boolean save(JSONObject snapshot) {
         File dir = new File(DEFAULT_CONFIG_DIR);
         if (!dir.exists()) {
             dir.mkdirs();
         }
         File configFile = new File(dir, CONFIG_FILE_NAME);
+        // Same-directory temporary file + rename ensures that provider queries
+        // never read a truncated/half-written JSON document during hot switching.
+        File tempFile = new File(dir, CONFIG_FILE_NAME + "."
+                + android.os.Process.myPid() + "." + Thread.currentThread().getId() + ".tmp");
         try {
-            try (FileOutputStream fos = new FileOutputStream(configFile)) {
+            try (FileOutputStream fos = new FileOutputStream(tempFile)) {
                 fos.write(snapshot.toString(4).getBytes(StandardCharsets.UTF_8));
+                fos.getFD().sync();
             }
 
-            // Set world-readable so hook processes (inside target apps) can read
-            // the config file via direct path when ContentProvider is unavailable.
-            try {
-                configFile.setReadable(true, false);
-                configFile.setWritable(true, true); // Keep write restricted to owner
-                // Also chmod parents so directory is traversable
-                dir.setExecutable(true, false);
-                dir.setReadable(true, false);
-            } catch (Exception ignored) {
-                // Best-effort
+            // Preserve fallback direct-file access permissions on the new inode.
+            tempFile.setReadable(true, false);
+            tempFile.setWritable(true, true);
+            dir.setExecutable(true, false);
+            dir.setReadable(true, false);
+            if (!tempFile.renameTo(configFile)) {
+                throw new IOException("Unable to replace config atomically");
             }
+            long modified = configFile.lastModified();
+            lastLoadedTime = modified > 0 ? modified : System.currentTimeMillis();
 
             // Notify ContentObserver and broadcast changes
             if (context != null) {
@@ -468,8 +507,12 @@ public class ConfigManager {
                 }
                 sendConfigBroadcast(context);
             }
+            return true;
         } catch (Exception e) {
-            e.printStackTrace();
+            io.github.zensu357.camswap.utils.LogUtil.log("【CS】【ConfigSave】配置持久化失败: " + e);
+            return false;
+        } finally {
+            if (tempFile.exists()) tempFile.delete();
         }
     }
 
@@ -499,10 +542,11 @@ public class ConfigManager {
     }
 
     public void resetToDefault() {
-        synchronized (configWriteLock) {
+        synchronized (CONFIG_WRITE_LOCK) {
             JSONObject updated = new JSONObject();
+            JSONObject previous = getConfigSnapshot();
             setConfigSnapshot(updated);
-            save(updated);
+            if (!save(updated)) setConfigSnapshot(previous);
         }
     }
 
@@ -511,10 +555,11 @@ public class ConfigManager {
     }
 
     public void importConfig(String json) throws JSONException {
-        synchronized (configWriteLock) {
+        synchronized (CONFIG_WRITE_LOCK) {
             JSONObject updated = new JSONObject(json);
+            JSONObject previous = getConfigSnapshot();
             setConfigSnapshot(updated);
-            save(updated);
+            if (!save(updated)) setConfigSnapshot(previous);
         }
     }
 

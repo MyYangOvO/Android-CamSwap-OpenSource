@@ -185,4 +185,5 @@
     <string name="root_mode_warning_dialog_text">该模式在高版本安卓可能不起作用</string>
     <string name="settings_qr_scan_compat">二维码扫描兼容模式</string>
     <string name="settings_qr_scan_compat_desc">扫码类应用专用：保持画面完整不裁切，并统一送帧路径</string>
+    <string name="media_selection_save_failed">媒体选择失败：配置未能保存，请检查存储权限</string>
 </resources>
