@@ -128,6 +128,8 @@ public final class Camera2SessionHook {
 
     // Surface-change tracking: skip redundant initCamera2Players when surfaces unchanged
     private Surface lastInitReader, lastInitReader1, lastInitPreview, lastInitPreview1;
+    /** CS_QR_HOTSWAP_V5: selected media for previous scan entry. */
+    private String qrLastScanMediaKeyV5;
 
     // Virtual surface pool for session hijacking (supports multiple OutputConfigurations)
     private final List<Surface> virtualSurfaces = new ArrayList<>();
@@ -406,7 +408,44 @@ public final class Camera2SessionHook {
     }
 
     /** Start video playback on all current surfaces. */
+    /** Refresh analysis source on the NEXT scan entry; host process may stay running.
+     * This does not switch frames while the scan screen is in use.
+     */
+    private void refreshQrMediaOnEntryV5() {
+        try {
+            VideoManager.getConfig().forceReload();
+            VideoManager.updateVideoPath(false);
+            ConfigManager config = VideoManager.getConfig();
+            String key = config.getString(ConfigManager.KEY_MEDIA_SOURCE_TYPE, "local") + "|"
+                    + config.getString(ConfigManager.KEY_REPLACE_MODE, "video") + "|"
+                    + config.getString(ConfigManager.KEY_SELECTED_VIDEO, "") + "|"
+                    + config.getString(ConfigManager.KEY_SELECTED_IMAGE, "") + "|"
+                    + config.getBoolean(ConfigManager.KEY_FORCE_PRIVATE_DIR, false) + "|"
+                    + config.getString(ConfigManager.KEY_STREAM_URL, "");
+            if (!key.equals(qrLastScanMediaKeyV5)) {
+                boolean hadPreviousSource = qrLastScanMediaKeyV5 != null;
+                qrLastScanMediaKeyV5 = key;
+                cachedYuvFrameMap.clear();
+                releaseCachedRetriever();
+                lastYuvFrameWasFallback = true;
+                lastYuvFrameWasCodec = false;
+                lastInitReader = null;
+                lastInitReader1 = null;
+                lastInitPreview = null;
+                lastInitPreview1 = null;
+                if (hadPreviousSource) {
+                    playerManager.restartAll();
+                    restartYuvDecoderForSourceChange();
+                }
+                LogUtil.log("【CS】【QR】【V5】进入扫码页面，更新媒体分析帧");
+            }
+        } catch (Throwable e) {
+            LogUtil.log("【CS】【QR】【V5】刷新失败: " + e);
+        }
+    }
+
     public void startPlayback() {
+        refreshQrMediaOnEntryV5();
         if (readerSurface == null && readerSurface1 == null
                 && previewSurface == null && previewSurface1 == null) {
             LogUtil.w("【CS】【SessionHook】【延迟播放】所有播放目标 Surface 均为 null，等待 addTarget 分发..."
@@ -2222,6 +2261,10 @@ public final class Camera2SessionHook {
 
     /** 媒体源变更时重启解码器（切换视频/旋转等） */
     public void restartYuvDecoderForSourceChange() {
+        // CS_QR_HOTSWAP_V5: invalidate previous YUV generation.
+        cachedYuvFrameMap.clear();
+        releaseCachedRetriever();
+        lastYuvFrameWasFallback = true;
         MediaCodecYuvDecoder dec = yuvDecoder;
         if (dec != null) {
             dec.stop();
@@ -2333,7 +2376,7 @@ public final class Camera2SessionHook {
     private MediaMetadataRetriever cachedRetriever;
     private String cachedRetrieverPath;
 
-    private Bitmap captureFrameFromVideoFile(int targetWidth, int targetHeight) {
+    private synchronized Bitmap captureFrameFromVideoFile(int targetWidth, int targetHeight) {
         // Stream mode: MediaMetadataRetriever cannot work with network URLs.
         // Return null to let caller use GL capture or last-frame cache.
         if (VideoManager.isStreamMode()) {
@@ -2390,7 +2433,7 @@ public final class Camera2SessionHook {
         }
     }
 
-    private void releaseCachedRetriever() {
+    private synchronized void releaseCachedRetriever() {
         if (cachedRetriever != null) {
             try {
                 cachedRetriever.release();

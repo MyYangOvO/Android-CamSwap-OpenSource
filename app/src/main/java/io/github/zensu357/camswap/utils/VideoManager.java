@@ -92,7 +92,8 @@ public class VideoManager {
 
         // 1. First check if we have a cached private video file in app's private filesDir
         File privateFile = new File(toast_content.getFilesDir(), "vcam_private.mp4");
-        if (privateFile.exists() && privateFile.length() > 0 && privateFile.canRead()) {
+        if (getConfig().getBoolean(ConfigManager.KEY_FORCE_PRIVATE_DIR, false)
+                && privateFile.exists() && privateFile.length() > 0 && privateFile.canRead()) {
             try {
                 return ParcelFileDescriptor.open(privateFile, ParcelFileDescriptor.MODE_READ_ONLY);
             } catch (Exception e) {
@@ -134,31 +135,32 @@ public class VideoManager {
 
         return null;
     }
-
     public static void copyToPrivateDir(ParcelFileDescriptor pfd) {
-        if (toast_content == null)
-            return;
+        if (toast_content == null || pfd == null) return;
         File privateFile = new File(toast_content.getFilesDir(), "vcam_private.mp4");
-
+        File tempFile = new File(toast_content.getFilesDir(), "vcam_private.mp4.tmp");
         try {
+            // CS_QR_HOTSWAP_V5: equal file sizes do not imply identical media.
+            // Write a complete replacement before changing the file used by readers.
             long size = pfd.getStatSize();
-            if (privateFile.exists() && privateFile.length() == size) {
-                log("【CS】[Private] 文件大小一致，跳过拷贝 (" + size + " bytes)");
-                return;
-            }
-
-            log("【CS】[Private] 开始拷贝视频到私有目录 (" + size + " bytes)...");
-            try (java.io.FileInputStream fis = new java.io.FileInputStream(pfd.getFileDescriptor());
-                    java.io.FileOutputStream fos = new java.io.FileOutputStream(privateFile)) {
-                byte[] buf = new byte[8192];
-                int len;
-                while ((len = fis.read(buf)) > 0) {
-                    fos.write(buf, 0, len);
+            try (java.io.FileInputStream in = new java.io.FileInputStream(pfd.getFileDescriptor());
+                 java.io.FileOutputStream out = new java.io.FileOutputStream(tempFile)) {
+                byte[] bytes = new byte[8192];
+                int n;
+                while ((n = in.read(bytes)) != -1) {
+                    if (n > 0) out.write(bytes, 0, n);
                 }
+                out.getFD().sync();
             }
-            log("【CS】[Private] 视频拷贝完成 (" + size + " bytes)");
+            if (tempFile.length() == 0L) throw new java.io.IOException("临时视频为空");
+            if (!tempFile.renameTo(privateFile)) {
+                throw new java.io.IOException("无法原子替换私有视频缓存");
+            }
+            log("【CS】[Private] 视频缓存已更新: " + privateFile.length() + " bytes, source=" + size);
         } catch (Exception e) {
-            log("【CS】[Private] 视频拷贝失败: " + e);
+            log("【CS】[Private] 视频缓存更新失败: " + e);
+        } finally {
+            if (tempFile.exists()) tempFile.delete();
         }
     }
 
