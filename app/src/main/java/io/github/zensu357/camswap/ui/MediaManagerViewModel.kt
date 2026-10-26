@@ -54,7 +54,8 @@ class MediaManagerViewModel(application: Application) : AndroidViewModel(applica
     val uiState: StateFlow<MediaManagerUiState> = _uiState.asStateFlow()
 
     private val mediaDir = File(android.os.Environment.getExternalStorageDirectory().absolutePath + "/DCIM/Camera1/")
-    private val configManager = ConfigManager()
+    // Needs a context so save() notifies the hooked apps (ContentObserver + broadcast).
+    private val configManager = ConfigManager().also { it.setContext(application.applicationContext) }
 
     init {
         if (!mediaDir.exists()) {
@@ -184,14 +185,14 @@ class MediaManagerViewModel(application: Application) : AndroidViewModel(applica
         viewModelScope.launch(Dispatchers.IO) {
             when (item.type) {
                 MediaType.VIDEO -> {
-                    configManager.reload()
+                    configManager.forceReload()
                     val currentSelected = configManager.getString(ConfigManager.KEY_SELECTED_VIDEO, null)
 
                     if (currentSelected == item.name) {
-                        configManager.setString(ConfigManager.KEY_SELECTED_VIDEO, "")
+                        configManager.setMediaSelection(ConfigManager.KEY_SELECTED_VIDEO, "")
                         _uiState.update { it.copy(selectedVideoName = null) }
                     } else {
-                        configManager.setString(ConfigManager.KEY_SELECTED_VIDEO, item.name)
+                        configManager.setMediaSelection(ConfigManager.KEY_SELECTED_VIDEO, item.name)
                         _uiState.update { it.copy(selectedVideoName = item.name) }
                     }
                     try {
@@ -201,7 +202,7 @@ class MediaManagerViewModel(application: Application) : AndroidViewModel(applica
                     loadMedia()
                 }
                 MediaType.IMAGE -> {
-                    configManager.setString(ConfigManager.KEY_SELECTED_IMAGE, item.name)
+                    configManager.setMediaSelection(ConfigManager.KEY_SELECTED_IMAGE, item.name)
                     _uiState.update { it.copy(selectedImageName = item.name) }
                 }
                 MediaType.AUDIO -> {
@@ -278,7 +279,7 @@ class MediaManagerViewModel(application: Application) : AndroidViewModel(applica
                         if (convertedFile != null && convertedFile.exists() && convertedFile.length() > 0) {
                             android.util.Log.d("CamSwap", "转换成功: ${convertedFile.name}, 大小: ${convertedFile.length()}")
                             // Auto-select the converted video
-                            configManager.setString(ConfigManager.KEY_SELECTED_VIDEO, convertedFile.name)
+                            configManager.setMediaSelection(ConfigManager.KEY_SELECTED_VIDEO, convertedFile.name)
                             _uiState.update { it.copy(selectedVideoName = convertedFile.name) }
                             try {
                                 context.contentResolver.notifyChange(
@@ -294,10 +295,28 @@ class MediaManagerViewModel(application: Application) : AndroidViewModel(applica
                         val fileName = if (originalName != null) originalName else "media_${System.currentTimeMillis()}.$extension"
                         
                         val destFile = File(mediaDir, fileName)
-                        
+                        // Never overwrite in place: a hooked app may be decoding this very file.
+                        // Write a sibling and rename atomically so readers see old OR new, never half.
+                        val partFile = File(mediaDir, "$fileName.part")
                         context.contentResolver.openInputStream(uri)?.use { input ->
-                            FileOutputStream(destFile).use { output ->
+                            FileOutputStream(partFile).use { output ->
                                 input.copyTo(output)
+                                output.fd.sync()
+                            }
+                        }
+                        if (partFile.length() > 0L) {
+                            if (!partFile.renameTo(destFile)) {
+                                partFile.copyTo(destFile, overwrite = true)
+                                partFile.delete()
+                            }
+                        } else {
+                            partFile.delete()
+                        }
+                        if (effectiveType == MediaType.VIDEO) {
+                            // Same file name, new bytes (e.g. a new QR code): tell the hooked apps.
+                            val selectedNow = configManager.getString(ConfigManager.KEY_SELECTED_VIDEO, null)
+                            if (selectedNow == fileName) {
+                                configManager.touchMediaRevision()
                             }
                         }
                         // Set world-readable so hook process can read via direct path

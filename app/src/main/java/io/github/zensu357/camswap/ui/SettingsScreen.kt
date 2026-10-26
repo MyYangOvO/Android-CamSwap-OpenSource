@@ -23,6 +23,7 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Description
@@ -68,7 +69,7 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(viewModel: MainViewModel) {
+fun SettingsScreen(viewModel: MainViewModel, onOpenAppPicker: () -> Unit = {}) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
     val scrollState = rememberScrollState()
@@ -177,6 +178,15 @@ fun SettingsScreen(viewModel: MainViewModel) {
 
         // ==================== General Settings ====================
         SettingsSection(title = stringResource(R.string.settings_category_general)) {
+            SettingsClickRow(
+                icon = Icons.Default.Apps,
+                title = stringResource(R.string.settings_target_apps),
+                subtitle = if (uiState.targetFilterEnabled)
+                    stringResource(R.string.apps_selected_count, uiState.targetAppsCount)
+                else stringResource(R.string.settings_target_apps_desc),
+                onClick = onOpenAppPicker
+            )
+            SettingsDivider()
             SettingsClickRow(
                 icon = Icons.Default.Image,
                 title = "照片旋转修正",

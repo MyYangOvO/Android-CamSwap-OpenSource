@@ -2,6 +2,7 @@ package io.github.zensu357.camswap.ui
 
 import androidx.annotation.StringRes
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.VideoLibrary
@@ -12,4 +13,6 @@ sealed class Screen(val route: String, @StringRes val titleResId: Int, val icon:
     object Home : Screen("home", R.string.nav_home, Icons.Default.Home)
     object Manage : Screen("manage", R.string.nav_manage, Icons.Default.VideoLibrary)
     object Settings : Screen("settings", R.string.nav_settings, Icons.Default.Settings)
+    /** Sub-page of Settings; intentionally not part of the bottom bar. */
+    object Apps : Screen("apps", R.string.apps_title, Icons.Default.Apps)
 }

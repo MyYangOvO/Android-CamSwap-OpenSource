@@ -28,10 +28,8 @@ public class ConfigReceiver extends BroadcastReceiver {
                 return;
             }
 
-            java.util.Set<String> targetPackages = cm.getTargetPackages();
             if (!requesterPackage.equals(context.getPackageName())
-                    && !targetPackages.isEmpty()
-                    && !targetPackages.contains(requesterPackage)) {
+                    && !cm.isPackageSelected(requesterPackage)) {
                 LogUtil.log("【CS-Host】拒绝向未授权包发送配置: " + requesterPackage);
                 return;
             }

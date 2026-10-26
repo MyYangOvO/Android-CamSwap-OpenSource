@@ -28,6 +28,53 @@ public final class ConfigWatcher {
     private android.database.ContentObserver configObserver;
     private FileObserver configFileObserver;
 
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    /** Fingerprint of the media/feature state we last acted on. */
+    private volatile String lastActedKey = null;
+    private volatile int lastActedRotation = Integer.MIN_VALUE;
+    private final Runnable dispatchMediaChanged = new Runnable() {
+        @Override
+        public void run() {
+            try {
+                callback.onMediaSourceChanged();
+            } catch (Throwable t) {
+                LogUtil.log("【CS】onMediaSourceChanged 异常: " + t);
+            }
+        }
+    };
+
+    private static String computeActKey(ConfigManager config) {
+        // Media fingerprint + the two switches that change what the hook must do.
+        return VideoManager.buildMediaStampKey(config) + "|real=" + config.getBoolean(ConfigManager.KEY_USE_REAL_CAMERA, false)
+                + "|filter=" + config.isTargetFilterEnabled()
+                + "|targets=" + config.getTargetPackages().hashCode();
+    }
+
+    /**
+     * Compare the freshly loaded config with what we last acted on and notify at most once.
+     * The ContentObserver and the broadcast both fire for one user action; coalesce them so the
+     * decoder/players are not torn down twice (the second teardown used to race with the first).
+     */
+    private void evaluateAndNotify(String why) {
+        ConfigManager config = VideoManager.getConfig();
+        String newKey = computeActKey(config);
+        int newRotation = config.getInt(ConfigManager.KEY_VIDEO_ROTATION_OFFSET, 0);
+        boolean mediaChanged = lastActedKey == null || !newKey.equals(lastActedKey);
+        boolean rotationChanged = lastActedRotation != Integer.MIN_VALUE && newRotation != lastActedRotation;
+        lastActedKey = newKey;
+        lastActedRotation = newRotation;
+        if (mediaChanged) {
+            LogUtil.log("【CS】媒体/开关变化(" + why + ")，重启播放器与解码器");
+            mainHandler.removeCallbacks(dispatchMediaChanged);
+            mainHandler.postDelayed(dispatchMediaChanged, 60);
+        } else if (rotationChanged) {
+            LogUtil.log("【CS】旋转变化(" + why + "): " + newRotation + "°");
+            callback.onRotationChanged(newRotation);
+        } else {
+            LogUtil.log("【CS】配置更新(" + why + "): 无需重启");
+        }
+    }
+
     public ConfigWatcher(Callback callback) {
         this.callback = callback;
     }
@@ -41,14 +88,17 @@ public final class ConfigWatcher {
             return; // already initialized
 
         LogUtil.log("【CS】初始化配置监听");
-        configObserver = new android.database.ContentObserver(new Handler(Looper.getMainLooper())) {
+        ConfigManager baseline = VideoManager.getConfig();
+        lastActedKey = computeActKey(baseline);
+        lastActedRotation = baseline.getInt(ConfigManager.KEY_VIDEO_ROTATION_OFFSET, 0);
+        configObserver = new android.database.ContentObserver(mainHandler) {
             @Override
             public void onChange(boolean selfChange) {
                 super.onChange(selfChange);
                 LogUtil.log("【CS】Provider 配置变更");
                 VideoManager.getConfig().forceReload();
                 VideoManager.updateVideoPath(false);
-                callback.onMediaSourceChanged();
+                evaluateAndNotify("observer");
             }
         };
 
@@ -71,10 +121,10 @@ public final class ConfigWatcher {
                     public void onEvent(int event, String path) {
                         if (path != null && path.endsWith(".json")) {
                             LogUtil.log("【CS】文件变更: " + path);
-                            new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                            mainHandler.postDelayed(() -> {
                                 VideoManager.getConfig().forceReload();
                                 VideoManager.updateVideoPath(false);
-                                callback.onMediaSourceChanged();
+                                evaluateAndNotify("file");
                             }, 200);
                         }
                     }
@@ -124,52 +174,38 @@ public final class ConfigWatcher {
         if (configJson == null)
             return;
 
-        // Snapshot old values
-        String oldVideo = config.getString(ConfigManager.KEY_SELECTED_VIDEO, "");
-        String oldImage = config.getString(ConfigManager.KEY_SELECTED_IMAGE, "");
-        String oldMode = config.getString(ConfigManager.KEY_REPLACE_MODE, ConfigManager.REPLACE_MODE_VIDEO);
-        boolean oldFpd = config.getBoolean(ConfigManager.KEY_FORCE_PRIVATE_DIR, false);
-        boolean oldRealCamera = config.getBoolean(ConfigManager.KEY_USE_REAL_CAMERA, false);
-        int oldRotation = config.getInt(ConfigManager.KEY_VIDEO_ROTATION_OFFSET, 0);
-        // Stream config snapshots
-        String oldSourceType = config.getString(ConfigManager.KEY_MEDIA_SOURCE_TYPE, ConfigManager.MEDIA_SOURCE_LOCAL);
-        String oldStreamUrl = config.getString(ConfigManager.KEY_STREAM_URL, "");
+        // A late/out-of-order broadcast must never roll the config back to an older media selection.
+        if (!config.updateConfigFromJSON(configJson)) {
+            return;
+        }
+        // The broadcast carries no provider-side media stamp; pull the authoritative snapshot
+        // (provider is always fresh now) so the change key is complete and we restart only once.
+        try {
+            config.forceReload();
+        } catch (Throwable t) {
+            LogUtil.log("【CS】广播后刷新配置失败: " + t);
+        }
 
-        config.updateConfigFromJSON(configJson);
-
-        // Snapshot new values
-        String newVideo = config.getString(ConfigManager.KEY_SELECTED_VIDEO, "");
-        String newImage = config.getString(ConfigManager.KEY_SELECTED_IMAGE, "");
-        String newMode = config.getString(ConfigManager.KEY_REPLACE_MODE, ConfigManager.REPLACE_MODE_VIDEO);
-        boolean newFpd = config.getBoolean(ConfigManager.KEY_FORCE_PRIVATE_DIR, false);
-        boolean newRealCamera = config.getBoolean(ConfigManager.KEY_USE_REAL_CAMERA, false);
-        int newRotation = config.getInt(ConfigManager.KEY_VIDEO_ROTATION_OFFSET, 0);
-        // Stream config new values
-        String newSourceType = config.getString(ConfigManager.KEY_MEDIA_SOURCE_TYPE, ConfigManager.MEDIA_SOURCE_LOCAL);
-        String newStreamUrl = config.getString(ConfigManager.KEY_STREAM_URL, "");
-
-        // Always extract video from Binder if attached
-        if (intent.hasExtra(IpcContract.EXTRA_VIDEO_BUNDLE)) {
+        // Pull the video bytes through the Binder only when the media actually changed (or we have no
+        // private copy yet); doing it on every broadcast is wasteful and widens the race window.
+        boolean keyChanged = lastActedKey == null || !computeActKey(config).equals(lastActedKey);
+        boolean haveBundle = intent.hasExtra(IpcContract.EXTRA_VIDEO_BUNDLE);
+        if (haveBundle && (keyChanged || !hasPrivateCopy())) {
             extractVideoFromBinder(intent);
         }
 
-        boolean mediaChanged = !oldVideo.equals(newVideo) ||
-                !oldImage.equals(newImage) ||
-                !oldMode.equals(newMode) ||
-                (oldFpd != newFpd) ||
-                (oldRealCamera != newRealCamera) ||
-                !oldSourceType.equals(newSourceType) ||
-                !oldStreamUrl.equals(newStreamUrl);
+        VideoManager.updateVideoPath(false);
+        evaluateAndNotify("broadcast");
+    }
 
-        if (mediaChanged) {
-            VideoManager.updateVideoPath(false);
-            callback.onMediaSourceChanged();
-            LogUtil.log("【CS】配置更新: 媒体源变化，重启播放器");
-        } else if (oldRotation != newRotation) {
-            LogUtil.log("【CS】配置更新: 旋转 " + newRotation + "°");
-            callback.onRotationChanged(newRotation);
-        } else {
-            LogUtil.log("【CS】配置更新: 无变化");
+    private boolean hasPrivateCopy() {
+        try {
+            android.content.Context c = HookMain.toast_content;
+            if (c == null) return false;
+            java.io.File f = new java.io.File(c.getFilesDir(), "vcam_private.mp4");
+            return f.exists() && f.length() > 0;
+        } catch (Throwable t) {
+            return false;
         }
     }
 

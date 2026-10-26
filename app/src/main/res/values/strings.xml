@@ -187,4 +187,17 @@
     <string name="settings_qr_scan_compat_desc">扫码类应用专用：保持画面完整不裁切，并统一送帧路径</string>
     <string name="settings_real_camera">临时使用真实相机</string>
     <string name="settings_real_camera_desc">暂时停止视频和图片替换。切换后退出并重新进入目标应用的相机页面以重新创建相机会话，无需划掉整个 App 后台。</string>
+    <string name="settings_target_apps">选择生效的应用</string>
+    <string name="settings_target_apps_desc">可随时勾选/取消，立即生效，无需重启目标应用</string>
+    <string name="apps_title">选择生效的应用</string>
+    <string name="apps_filter_enable">仅对勾选的应用生效</string>
+    <string name="apps_filter_enable_desc_on">未勾选的应用将始终使用真实摄像头</string>
+    <string name="apps_filter_enable_desc_off">已关闭：作用域内的所有应用都会被替换</string>
+    <string name="apps_search_hint">搜索应用名或包名</string>
+    <string name="apps_show_system">显示系统应用</string>
+    <string name="apps_selected_count">已勾选 %1$d 个</string>
+    <string name="apps_select_visible">全选当前列表</string>
+    <string name="apps_clear_visible">取消当前列表</string>
+    <string name="apps_scope_hint">仅在 LSPosed 作用域内的应用才会真正被 Hook；此处只决定其中哪些应用被替换画面。</string>
+    <string name="apps_back">返回</string>
 </resources>

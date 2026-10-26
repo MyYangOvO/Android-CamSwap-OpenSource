@@ -187,4 +187,17 @@
     <string name="settings_qr_scan_compat_desc">For QR scanner apps: keep full frame (no crop) and use a single frame path</string>
     <string name="settings_real_camera">Temporarily use real camera</string>
     <string name="settings_real_camera_desc">Temporarily stop video and image replacement. Close and reopen the camera screen in the target app to recreate its camera session; no need to force-stop the app.</string>
+    <string name="settings_target_apps">Apps to replace</string>
+    <string name="settings_target_apps_desc">Tick / untick at any time; takes effect immediately, no app restart</string>
+    <string name="apps_title">Apps to replace</string>
+    <string name="apps_filter_enable">Only replace ticked apps</string>
+    <string name="apps_filter_enable_desc_on">Un-ticked apps always use the real camera</string>
+    <string name="apps_filter_enable_desc_off">Off: every app in the LSPosed scope is replaced</string>
+    <string name="apps_search_hint">Search app name or package</string>
+    <string name="apps_show_system">Show system apps</string>
+    <string name="apps_selected_count">%1$d selected</string>
+    <string name="apps_select_visible">Tick all listed</string>
+    <string name="apps_clear_visible">Untick all listed</string>
+    <string name="apps_scope_hint">Only apps inside the LSPosed scope are actually hooked; this list only decides which of them get the replaced picture.</string>
+    <string name="apps_back">Back</string>
 </resources>

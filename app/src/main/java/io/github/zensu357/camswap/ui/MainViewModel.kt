@@ -37,6 +37,8 @@ data class MainUiState(
     val hasPermission: Boolean = false,
     val isXposedActive: Boolean = false,
     val targetAppsCount: Int = 0,
+    val targetFilterEnabled: Boolean = false,
+    val targetPackages: Set<String> = emptySet(),
     val originalVideoName: String? = null,
     val latestVersion: String? = null,
 
@@ -50,7 +52,9 @@ data class MainUiState(
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
-    private val configManager = ConfigManager()
+    // The context is REQUIRED: without it save() neither notifies the ContentObserver nor sends the
+    // config broadcast, so changes made from the UI never reached the hooked apps.
+    private val configManager = ConfigManager().also { it.setContext(application.applicationContext) }
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
@@ -61,7 +65,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun loadConfig() {
         viewModelScope.launch(Dispatchers.IO) {
-            configManager.reload()
+            configManager.forceReload()
             
             _uiState.update { currentState ->
                 currentState.copy(
@@ -80,6 +84,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     notificationControlEnabled = configManager.getBoolean(ConfigManager.KEY_NOTIFICATION_CONTROL_ENABLED, false),
                     overlayControlEnabled = configManager.getBoolean(ConfigManager.KEY_OVERLAY_CONTROL_ENABLED, false),
                     targetAppsCount = configManager.targetPackages.size,
+                    targetFilterEnabled = configManager.isTargetFilterEnabled,
+                    targetPackages = configManager.targetPackages,
                     originalVideoName = configManager.getString(ConfigManager.KEY_ORIGINAL_VIDEO_NAME, null),
                     // Stream config
                     mediaSourceType = configManager.getString(ConfigManager.KEY_MEDIA_SOURCE_TYPE, ConfigManager.MEDIA_SOURCE_LOCAL),
@@ -109,6 +115,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             freshConfig.forceReload()
             freshConfig.setBoolean(ConfigManager.KEY_USE_REAL_CAMERA, enabled)
             _uiState.update { it.copy(useRealCamera = enabled) }
+        }
+    }
+
+    // ---- Per-app switch ("which apps get the replaced camera") ----
+
+    fun setTargetFilterEnabled(enabled: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            configManager.setTargetFilterEnabled(enabled)
+            _uiState.update { it.copy(targetFilterEnabled = enabled) }
+        }
+    }
+
+    fun setTargetPackage(packageName: String, selected: Boolean) {
+        // Optimistic UI update so the checkbox reacts instantly, then persist.
+        _uiState.update {
+            val next = if (selected) it.targetPackages + packageName else it.targetPackages - packageName
+            it.copy(targetPackages = next, targetAppsCount = next.size)
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            if (selected) configManager.updateTargetPackages(listOf(packageName), null)
+            else configManager.updateTargetPackages(null, listOf(packageName))
+        }
+    }
+
+    fun updateTargetPackages(add: Collection<String>, remove: Collection<String>) {
+        _uiState.update {
+            val next = (it.targetPackages + add) - remove.toSet()
+            it.copy(targetPackages = next, targetAppsCount = next.size)
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            configManager.updateTargetPackages(add, remove)
         }
     }
 

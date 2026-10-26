@@ -173,10 +173,10 @@ public class HookMain {
             return;
         }
 
-        Set<String> targetPackages = getConfig().getTargetPackages();
-        if (!targetPackages.isEmpty() && !targetPackages.contains(packageName)) {
-            return;
-        }
+        // The app picker is evaluated live (HookGuards.isEnabledForThisApp), not once at load time:
+        // every app in the LSPosed scope gets the hooks, and un-ticked apps simply pass through.
+        // Returning early here would make a newly ticked app need a process restart.
+        HookGuards.setHostPackage(packageName);
 
         camera2Hook.setCurrentPackageName(packageName);
         playerManager.setPackageName(packageName);

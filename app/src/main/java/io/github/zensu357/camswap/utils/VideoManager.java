@@ -517,6 +517,26 @@ public class VideoManager {
         }
     }
 
+    /**
+     * Fingerprint of "what media should be shown right now". Includes the revision counter and the
+     * provider-side file stamp (name|size|mtime) so that overwriting a file in place, or re-importing
+     * a QR image under the same name, is detected as a change. Cheap: memory only, no IPC.
+     */
+    public static String getMediaStampKey() {
+        return buildMediaStampKey(getConfig());
+    }
+
+    public static String buildMediaStampKey(ConfigManager config) {
+        return config.getString(ConfigManager.KEY_MEDIA_SOURCE_TYPE, ConfigManager.MEDIA_SOURCE_LOCAL) + "|"
+                + config.getString(ConfigManager.KEY_REPLACE_MODE, ConfigManager.REPLACE_MODE_VIDEO) + "|"
+                + config.getString(ConfigManager.KEY_SELECTED_VIDEO, "") + "|"
+                + config.getString(ConfigManager.KEY_SELECTED_IMAGE, "") + "|"
+                + config.getBoolean(ConfigManager.KEY_FORCE_PRIVATE_DIR, false) + "|"
+                + config.getString(ConfigManager.KEY_STREAM_URL, "") + "|"
+                + config.getLong(ConfigManager.KEY_MEDIA_REVISION, 0L) + "|"
+                + config.getString(ConfigManager.KEY_MEDIA_STAMP, "");
+    }
+
     // =====================================================================
     // Stream / unified media source support
     // =====================================================================

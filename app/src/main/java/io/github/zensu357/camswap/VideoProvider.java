@@ -20,11 +20,26 @@ import io.github.zensu357.camswap.utils.VideoManager;
 public class VideoProvider extends ContentProvider {
     private ConfigManager configManager;
 
+    /**
+     * The provider lives in the host process next to several other ConfigManager instances that
+     * write cs_config.json. reload() is debounced (1s) and mtime-gated, so right after the user
+     * switched media it kept answering with the OLD selection - the hook then (re)opened the old
+     * file. Always re-read the file here.
+     */
+    private void refreshConfigNow() {
+        try {
+            configManager.forceReload();
+        } catch (Throwable t) {
+            Log.w("VideoProvider", "forceReload failed: " + t);
+        }
+    }
+
     private boolean isCallerAllowed() {
         android.content.Context context = getContext();
         if (context == null) {
             return false;
         }
+        refreshConfigNow();
 
         int callingUid = Binder.getCallingUid();
         if (callingUid == android.os.Process.myUid()) {
@@ -37,15 +52,12 @@ public class VideoProvider extends ContentProvider {
             return false;
         }
 
-        Set<String> targetPackages = configManager.getTargetPackages();
-        if (targetPackages.isEmpty()) {
+        if (!configManager.isTargetFilterEnabled()) {
             return true;
         }
 
-        Set<String> allowedPackages = new HashSet<>(targetPackages);
-        allowedPackages.add(context.getPackageName());
         for (String pkg : packages) {
-            if (allowedPackages.contains(pkg)) {
+            if (pkg.equals(context.getPackageName()) || configManager.isPackageSelected(pkg)) {
                 return true;
             }
         }
@@ -81,20 +93,32 @@ public class VideoProvider extends ContentProvider {
 
     @Override
     public Cursor query(Uri uri, String[] projection, String selection, String[] selectionArgs, String sortOrder) {
-        if (!isCallerAllowed()) {
+        String lastPathSegment = uri.getLastPathSegment();
+        boolean allowed = isCallerAllowed();
+        if (!allowed) {
+            // A scoped app that is currently NOT ticked in the app picker must still be able to learn
+            // that it is not selected (and when it gets selected later). Expose only the target list.
+            if (IpcContract.PATH_CONFIG.equals(lastPathSegment)) {
+                android.database.MatrixCursor deny = new android.database.MatrixCursor(
+                        new String[] { "key", "value", "type" });
+                org.json.JSONObject all = configManager.getConfigData();
+                org.json.JSONArray arr = all.optJSONArray(ConfigManager.KEY_TARGET_PACKAGES);
+                if (arr != null) {
+                    deny.addRow(new Object[] { ConfigManager.KEY_TARGET_PACKAGES, arr.toString(), "json_array" });
+                }
+                deny.addRow(new Object[] { ConfigManager.KEY_TARGET_FILTER_ENABLED,
+                        String.valueOf(configManager.isTargetFilterEnabled()), "boolean" });
+                deny.addRow(new Object[] { ConfigManager.KEY_CONFIG_REV,
+                        String.valueOf(all.optLong(ConfigManager.KEY_CONFIG_REV, 0L)), "long" });
+                return deny;
+            }
             return null;
         }
-        String lastPathSegment = uri.getLastPathSegment();
         if (IpcContract.PATH_CONFIG.equals(lastPathSegment)) {
-            configManager.reload();
-            // If configData is still empty after reload, try force reload once more
             org.json.JSONObject data = configManager.getConfigData();
-            if (data == null || data.length() == 0) {
-                configManager.forceReload();
-                data = configManager.getConfigData();
-            }
             android.database.MatrixCursor cursor = new android.database.MatrixCursor(
                     new String[] { "key", "value", "type" });
+            cursor.addRow(new Object[] { ConfigManager.KEY_MEDIA_STAMP, computeMediaStamp(), "string" });
             if (data != null) {
                 java.util.Iterator<String> keys = data.keys();
                 while (keys.hasNext()) {
@@ -146,7 +170,6 @@ public class VideoProvider extends ContentProvider {
         if (!isCallerAllowed()) {
             throw new FileNotFoundException("Caller not allowed");
         }
-        configManager.reload();
 
         String lastSeg = uri.getLastPathSegment();
 
@@ -175,35 +198,8 @@ public class VideoProvider extends ContentProvider {
         // Random play is handled ONLY via call("random"), not on every openFile access.
         // This prevents the video from constantly switching during playback.
 
-        // 1. Try to get the selected video name
-        String videoName = configManager.getString(ConfigManager.KEY_SELECTED_VIDEO, null);
-
+        File videoFile = resolveServedVideoFile();
         File videoDir = new File(ConfigManager.DEFAULT_CONFIG_DIR);
-        File videoFile = null;
-
-        Log.d("VideoProvider", "openFile: selectedVideo=" + videoName + ", videoDir=" + videoDir.getAbsolutePath()
-                + " exists=" + videoDir.exists());
-
-        if (videoName != null && !videoName.isEmpty()) {
-            videoFile = new File(videoDir, videoName);
-            Log.d("VideoProvider", "openFile: trying " + videoFile.getAbsolutePath() + " exists=" + videoFile.exists()
-                    + " canRead=" + videoFile.canRead());
-        }
-
-        // 2. If not found or invalid, fallback to cam.mp4
-        if (videoFile == null || !videoFile.exists() || videoFile.isDirectory()) {
-            videoFile = new File(videoDir, "Cam.mp4");
-            Log.d("VideoProvider", "openFile: fallback to Cam.mp4 exists=" + videoFile.exists());
-        }
-
-        // 3. If still not found, try to find *any* mp4
-        if (!videoFile.exists() || videoFile.isDirectory()) {
-            File[] files = videoDir.listFiles((dir, name) -> name.toLowerCase().endsWith(".mp4"));
-            Log.d("VideoProvider", "openFile: listFiles returned " + (files == null ? "null" : files.length));
-            if (files != null && files.length > 0) {
-                videoFile = files[0];
-            }
-        }
 
         if (videoFile == null || !videoFile.exists()) {
             Log.e("VideoProvider", "No video file found in " + videoDir.getAbsolutePath());
@@ -222,6 +218,39 @@ public class VideoProvider extends ContentProvider {
             throw new FileNotFoundException(
                     "Cannot open video file: " + videoFile.getAbsolutePath() + " - " + e.getMessage());
         }
+    }
+
+    /** Same lookup order as before: selected_video -> Cam.mp4 -> any mp4. */
+    private File resolveServedVideoFile() {
+        File videoDir = new File(ConfigManager.DEFAULT_CONFIG_DIR);
+        String videoName = configManager.getString(ConfigManager.KEY_SELECTED_VIDEO, null);
+        File videoFile = null;
+        if (videoName != null && !videoName.isEmpty()) {
+            videoFile = new File(videoDir, videoName);
+        }
+        if (videoFile == null || !videoFile.exists() || videoFile.isDirectory()) {
+            videoFile = new File(videoDir, "Cam.mp4");
+        }
+        if (!videoFile.exists() || videoFile.isDirectory()) {
+            File[] files = videoDir.listFiles((dir, name) -> name.toLowerCase().endsWith(".mp4"));
+            if (files != null && files.length > 0) {
+                java.util.Arrays.sort(files);
+                videoFile = files[0];
+            }
+        }
+        return videoFile;
+    }
+
+    /** name|size|mtime of the file that openFile() would serve right now. */
+    private String computeMediaStamp() {
+        try {
+            File f = resolveServedVideoFile();
+            if (f != null && f.exists()) {
+                return f.getName() + "|" + f.length() + "|" + f.lastModified();
+            }
+        } catch (Throwable ignored) {
+        }
+        return "none";
     }
 
     /**
@@ -282,7 +311,6 @@ public class VideoProvider extends ContentProvider {
             denied.putBoolean(IpcContract.EXTRA_CHANGED, false);
             return denied;
         }
-        configManager.reload();
         boolean changed = false;
 
         try {

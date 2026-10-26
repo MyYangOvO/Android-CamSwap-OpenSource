@@ -9,8 +9,46 @@ public final class HookGuards {
     private HookGuards() {
     }
 
+    private static volatile String hostPackage;
+
+    public static void setHostPackage(String packageName) {
+        hostPackage = packageName;
+    }
+
+    public static String getHostPackage() {
+        String p = hostPackage;
+        if (p != null && !p.isEmpty()) {
+            return p;
+        }
+        try {
+            if (HookMain.toast_content != null) {
+                return HookMain.toast_content.getPackageName();
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    /**
+     * Per-app switch, evaluated live on every call (no process restart needed).
+     * Filter off = every app in the LSPosed scope is replaced (previous behaviour);
+     * filter on = only the ticked apps are.
+     */
+    public static boolean isEnabledForThisApp() {
+        String pkg = getHostPackage();
+        if (pkg == null) {
+            return true;
+        }
+        return VideoManager.getConfig().isPackageSelected(pkg);
+    }
+
+    /**
+     * True = hand the real camera through untouched. Either the user flipped the global
+     * "temporarily use real camera" switch, or this app is not ticked in the app picker.
+     */
     public static boolean useRealCamera() {
-        return VideoManager.getConfig().getBoolean(ConfigManager.KEY_USE_REAL_CAMERA, false);
+        return !isEnabledForThisApp()
+                || VideoManager.getConfig().getBoolean(ConfigManager.KEY_USE_REAL_CAMERA, false);
     }
 
     public static File resolveVideoFile(boolean forceRandom) {

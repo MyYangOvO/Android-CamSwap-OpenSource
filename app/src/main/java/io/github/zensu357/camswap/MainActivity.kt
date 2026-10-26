@@ -28,6 +28,8 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import io.github.libxposed.service.XposedService
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
 import io.github.zensu357.camswap.ui.*
 import io.github.zensu357.camswap.ui.theme.CamSwapTheme
 import androidx.compose.ui.unit.dp
@@ -122,10 +124,21 @@ class MainActivity : ComponentActivity(), App.ServiceStateListener {
                         Screen.Home.route -> stringResource(id = R.string.app_name)
                         Screen.Manage.route -> stringResource(Screen.Manage.titleResId)
                         Screen.Settings.route -> stringResource(Screen.Settings.titleResId)
+                        Screen.Apps.route -> stringResource(Screen.Apps.titleResId)
                         else -> stringResource(id = R.string.app_name)
                     }
                     
                     TopAppBar(
+                        navigationIcon = {
+                            if (currentRoute == Screen.Apps.route) {
+                                androidx.compose.material3.IconButton(onClick = { navController.popBackStack() }) {
+                                    Icon(
+                                        Icons.Filled.ArrowBack,
+                                        contentDescription = stringResource(R.string.apps_back)
+                                    )
+                                }
+                            }
+                        },
                         title = { 
                             Text(
                                 text = title,
@@ -151,7 +164,8 @@ class MainActivity : ComponentActivity(), App.ServiceStateListener {
                         NavigationBarItem(
                             icon = { Icon(screen.icon, contentDescription = stringResource(screen.titleResId)) },
                             label = { Text(stringResource(screen.titleResId)) },
-                            selected = currentRoute == screen.route,
+                            selected = currentRoute == screen.route ||
+                                (screen == Screen.Settings && currentRoute == Screen.Apps.route),
                             onClick = {
                                 navController.navigate(screen.route) {
                                     popUpTo(navController.graph.findStartDestination().id) {
@@ -186,7 +200,13 @@ class MainActivity : ComponentActivity(), App.ServiceStateListener {
                     ManageScreen(viewModel = mediaViewModel)
                 }
                 composable(Screen.Settings.route) {
-                    SettingsScreen(viewModel = mainViewModel)
+                    SettingsScreen(
+                        viewModel = mainViewModel,
+                        onOpenAppPicker = { navController.navigate(Screen.Apps.route) }
+                    )
+                }
+                composable(Screen.Apps.route) {
+                    AppSelectScreen(viewModel = mainViewModel)
                 }
             }
         }

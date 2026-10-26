@@ -27,6 +27,9 @@ final class MediaCodecYuvDecoder {
 
     private volatile boolean running;
     private Thread decodeThread;
+    private volatile long startedAtMs;
+    /** Fingerprint of the media this pass opened; a mismatch makes the loop reopen the source. */
+    private volatile String openedKey;
 
     // Latest decoded frame — written by decode thread, read by pump thread.
     // Access is guarded by volatile reference swap (single writer, single reader).
@@ -62,6 +65,7 @@ final class MediaCodecYuvDecoder {
         if (running) return;
         running = true;
         latestFrame = null;
+        startedAtMs = System.currentTimeMillis();
         decodeThread = new Thread(this::decodeLoop, "CS-YuvDecode");
         decodeThread.start();
     }
@@ -73,7 +77,7 @@ final class MediaCodecYuvDecoder {
         if (t != null) {
             t.interrupt();
             try {
-                t.join(1000);
+                t.join(400);
             } catch (InterruptedException ignored) {
             }
         }
@@ -83,6 +87,14 @@ final class MediaCodecYuvDecoder {
 
     boolean isRunning() {
         return running;
+    }
+
+    boolean hasFrame() {
+        return latestFrame != null;
+    }
+
+    long msSinceStart() {
+        return System.currentTimeMillis() - startedAtMs;
     }
 
     /** Returns the latest decoded YUV frame, or null if none available yet. */
@@ -133,6 +145,12 @@ final class MediaCodecYuvDecoder {
     }
 
     private void decodeOnePass() throws IOException {
+        // Fingerprint first, open second: if the config changes in between we notice and reopen.
+        String keyAtOpen = VideoManager.getMediaStampKey();
+        if (openedKey != null && !openedKey.equals(keyAtOpen)) {
+            latestFrame = null; // never keep serving a frame of the previous QR code
+        }
+        openedKey = keyAtOpen;
         String videoPath = VideoManager.getCurrentVideoPath();
         ParcelFileDescriptor pfd = VideoManager.getVideoPFD();
         FileDescriptor fd = pfd != null ? pfd.getFileDescriptor() : null;
@@ -153,6 +171,7 @@ final class MediaCodecYuvDecoder {
             int trackIndex = selectVideoTrack(extractor);
             if (trackIndex < 0) {
                 LogUtil.log("【CS】YuvDecoder: 未发现视频轨道");
+                try { Thread.sleep(500); } catch (InterruptedException ignored) {}
                 return;
             }
             extractor.selectTrack(trackIndex);
@@ -205,8 +224,21 @@ final class MediaCodecYuvDecoder {
 
         // Reusable plane buffers — avoid allocation per frame
         byte[] yBuf = null, uBuf = null, vBuf = null;
+        long lastKeyCheckMs = 0L;
 
         while (running) {
+            // Self-healing: if the selected media changed (or was overwritten in place) while we are
+            // looping the old file, leave so decodeLoop() reopens the new one.
+            long nowMs = System.currentTimeMillis();
+            if (nowMs - lastKeyCheckMs >= 400L) {
+                lastKeyCheckMs = nowMs;
+                String k = openedKey;
+                if (k != null && !k.equals(VideoManager.getMediaStampKey())) {
+                    LogUtil.log("【CS】YuvDecoder: 检测到媒体已变化，重新打开数据源");
+                    return;
+                }
+            }
+
             // Feed input
             if (!sawInputEOS) {
                 int inIdx = decoder.dequeueInputBuffer(TIMEOUT_US);
@@ -230,7 +262,19 @@ final class MediaCodecYuvDecoder {
             if (outIdx >= 0) {
                 if ((info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
                     decoder.releaseOutputBuffer(outIdx, false);
-                    // End of video — seek back for loop
+                    // End of video: ask the provider once per loop whether the media changed, so a
+                    // missed notification can never leave us looping a stale QR code forever.
+                    try {
+                        if (!VideoManager.isStreamMode()) {
+                            VideoManager.getConfig().forceReload();
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                    String kNow = VideoManager.getMediaStampKey();
+                    if (openedKey != null && !openedKey.equals(kNow)) {
+                        LogUtil.log("【CS】YuvDecoder: 循环边界发现媒体变化，重新打开");
+                        return;
+                    }
                     extractor.seekTo(0, MediaExtractor.SEEK_TO_CLOSEST_SYNC);
                     decoder.flush();
                     sawInputEOS = false;

@@ -97,7 +97,8 @@ public class MicrophoneHandler implements ICameraHandler {
 
     private static boolean isMicHookEnabled() {
         try {
-            return VideoManager.getConfig().getBoolean(ConfigManager.KEY_ENABLE_MIC_HOOK, false);
+            return HookGuards.isEnabledForThisApp()
+                    && VideoManager.getConfig().getBoolean(ConfigManager.KEY_ENABLE_MIC_HOOK, false);
         } catch (Exception e) {
             return false;
         }

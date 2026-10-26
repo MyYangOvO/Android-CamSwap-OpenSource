@@ -315,6 +315,7 @@ public final class Camera2SessionHook {
                     captureBuilder = null;
                     setBypassCurrentSession(false);
                     yuvBridgeSessionReady = false;
+                    releaseYuvDecoderForSessionEnd();
                     isFirstHookBuild = true;
                     lastInitReader = null;
                     lastInitReader1 = null;
@@ -357,6 +358,7 @@ public final class Camera2SessionHook {
                     LogUtil.log("【CS】相机关闭 onClosed，释放播放器资源");
                     setBypassCurrentSession(false);
                     yuvBridgeSessionReady = false;
+                    releaseYuvDecoderForSessionEnd();
                     stopAllWhatsAppYuvPumps();
                     playerManager.releaseCamera2Resources();
                     releaseImageWriters();
@@ -394,6 +396,7 @@ public final class Camera2SessionHook {
                     LogUtil.log("【CS】相机断开 onDisconnected，释放播放器资源");
                     setBypassCurrentSession(false);
                     yuvBridgeSessionReady = false;
+                    releaseYuvDecoderForSessionEnd();
                     stopAllWhatsAppYuvPumps();
                     playerManager.releaseCamera2Resources();
                     releaseImageWriters();
@@ -416,12 +419,7 @@ public final class Camera2SessionHook {
             VideoManager.getConfig().forceReload();
             VideoManager.updateVideoPath(false);
             ConfigManager config = VideoManager.getConfig();
-            String key = config.getString(ConfigManager.KEY_MEDIA_SOURCE_TYPE, "local") + "|"
-                    + config.getString(ConfigManager.KEY_REPLACE_MODE, "video") + "|"
-                    + config.getString(ConfigManager.KEY_SELECTED_VIDEO, "") + "|"
-                    + config.getString(ConfigManager.KEY_SELECTED_IMAGE, "") + "|"
-                    + config.getBoolean(ConfigManager.KEY_FORCE_PRIVATE_DIR, false) + "|"
-                    + config.getString(ConfigManager.KEY_STREAM_URL, "");
+            String key = VideoManager.getMediaStampKey();
             if (!key.equals(qrLastScanMediaKeyV5)) {
                 boolean hadPreviousSource = qrLastScanMediaKeyV5 != null;
                 qrLastScanMediaKeyV5 = key;
@@ -1717,6 +1715,18 @@ public final class Camera2SessionHook {
         }
         lastYuvFrameWasCodec = false;
 
+        // QR mode: while the fresh decoder is still warming up (max 2.5s) do not fall back to the GL
+        // renderer / retriever, which may still hold the previous media. A placeholder is returned
+        // by the caller instead, so the scanner never decodes the old QR code.
+        if (isQrScanCompatEnabled()
+                && VideoManager.getConfig().getInt(ConfigManager.KEY_VIDEO_ROTATION_OFFSET, 0) == 0) {
+            MediaCodecYuvDecoder warming = yuvDecoder;
+            if (warming != null && warming.isRunning() && !warming.hasFrame()
+                    && warming.msSinceStart() < 2500L) {
+                return null;
+            }
+        }
+
         // 回退到 GL 截帧 + RGB→YUV 转换
         Bitmap frame = captureFrameForYuv(width, height);
         if (frame == null) {
@@ -2290,6 +2300,26 @@ public final class Camera2SessionHook {
         LogUtil.log("【CS】MediaCodec YUV 解码器已启动");
     }
 
+    /**
+     * Stop the decoder when a camera session ends. It used to survive across scan entries with the
+     * previous media file still open, so a new scan screen could be fed the old QR code.
+     */
+    private void releaseYuvDecoderForSessionEnd() {
+        try {
+            cachedYuvFrameMap.clear();
+            releaseCachedRetriever();
+            lastYuvFrameWasFallback = true;
+            lastYuvFrameWasCodec = false;
+            MediaCodecYuvDecoder dec = yuvDecoder;
+            yuvDecoder = null;
+            if (dec != null) {
+                dec.stop();
+            }
+        } catch (Throwable t) {
+            LogUtil.log("【CS】释放 YUV 解码器异常: " + t);
+        }
+    }
+
     /** Stop synthetic QR frames while retaining hooks for the next camera session. */
     public void suspendYuvDecoderForRealCamera() {
         cachedYuvFrameMap.clear();
@@ -2429,9 +2459,11 @@ public final class Camera2SessionHook {
         }
         try {
             String currentPath = VideoManager.getCurrentVideoPath();
-            // 复用已有 retriever，只在路径变化时重新创建
+            // Same path != same media (private cache / in-place overwrite): key on the fingerprint too.
+            String retrieverKey = currentPath + "#" + VideoManager.getMediaStampKey();
+            // 复用已有 retriever，只在媒体变化时重新创建
             if (cachedRetriever == null || cachedRetrieverPath == null
-                    || !cachedRetrieverPath.equals(currentPath)) {
+                    || !cachedRetrieverPath.equals(retrieverKey)) {
                 releaseCachedRetriever();
                 MediaMetadataRetriever retriever = new MediaMetadataRetriever();
                 android.os.ParcelFileDescriptor pfd = VideoManager.getVideoPFD();
@@ -2448,7 +2480,7 @@ public final class Camera2SessionHook {
                     retriever.setDataSource(currentPath);
                 }
                 cachedRetriever = retriever;
-                cachedRetrieverPath = currentPath;
+                cachedRetrieverPath = retrieverKey;
             }
 
             long positionUs = HookMain.playerManager.getCamera2PlaybackPositionMs() * 1000L;

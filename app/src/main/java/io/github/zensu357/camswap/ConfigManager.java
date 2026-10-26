@@ -38,6 +38,8 @@ public class ConfigManager {
     public static final String KEY_DISABLE_TOAST = "disable_toast";
     public static final String KEY_ENABLE_RANDOM_PLAY = "enable_random_play";
     public static final String KEY_TARGET_PACKAGES = "target_packages";
+    /** true = only the ticked apps in target_packages are replaced; false = every scoped app. */
+    public static final String KEY_TARGET_FILTER_ENABLED = "target_filter_enabled";
     public static final String KEY_SELECTED_VIDEO = "selected_video";
     public static final String KEY_ORIGINAL_VIDEO_NAME = "original_video_name";
     public static final String KEY_SELECTED_IMAGE = "selected_image";
@@ -59,6 +61,12 @@ public class ConfigManager {
     /** Opt-in: supply synthetic Camera2 YUV frames to ordinary QR-scanning apps. */
     public static final String KEY_ENABLE_QR_SCAN_COMPAT = "enable_qr_scan_compat";
     public static final String KEY_ENABLE_WHATSAPP_CAMERA2_COMPAT = "enable_whatsapp_camera2_compat";
+    /** Monotonic config revision, bumped on every save(); lets receivers drop stale/out-of-order snapshots. */
+    public static final String KEY_CONFIG_REV = "config_rev";
+    /** Bumped whenever the media bytes may have changed without the file name changing (re-import, overwrite). */
+    public static final String KEY_MEDIA_REVISION = "media_revision";
+    /** Synthetic (not persisted): name|size|mtime of the file the provider currently serves. */
+    public static final String KEY_MEDIA_STAMP = "media_stamp";
 
     // Stream media source keys
     public static final String KEY_MEDIA_SOURCE_TYPE = "media_source_type";       // "local" | "stream"
@@ -137,11 +145,60 @@ public class ConfigManager {
         configData.set(snapshot != null ? snapshot : new JSONObject());
     }
 
+    /**
+     * Writers must never save a stale in-memory snapshot: several ConfigManager instances
+     * (MainViewModel, MediaManagerViewModel, VideoProvider ...) live in the host process, and a
+     * stale one would silently revert e.g. the media the user has just selected. Re-read the
+     * file right before every read-modify-write (no debounce, no mtime check).
+     */
+    private void refreshSnapshotFromFileForWrite() {
+        if (skipProviderReload && context == null) {
+            return;
+        }
+        File configFile = new File(DEFAULT_CONFIG_DIR, CONFIG_FILE_NAME);
+        if (!configFile.exists() || !configFile.canRead()) {
+            return;
+        }
+        try {
+            StringBuilder sb = new StringBuilder();
+            try (BufferedReader br = new BufferedReader(
+                    new InputStreamReader(new FileInputStream(configFile), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = br.readLine()) != null) {
+                    sb.append(line);
+                }
+            }
+            if (sb.length() == 0) {
+                return;
+            }
+            JSONObject fromFile = new JSONObject(sb.toString());
+            long fileRev = fromFile.optLong(KEY_CONFIG_REV, 0L);
+            long memRev = getConfigSnapshot().optLong(KEY_CONFIG_REV, 0L);
+            if (fileRev >= memRev) {
+                setConfigSnapshot(fromFile);
+            }
+        } catch (Exception ignored) {
+            // keep the in-memory snapshot
+        }
+    }
+
+    /** Bump the revision and drop synthetic keys BEFORE the snapshot is published to other threads. */
+    private static void prepareForSave(JSONObject o) {
+        try {
+            long prevRev = o.optLong(KEY_CONFIG_REV, 0L);
+            o.put(KEY_CONFIG_REV, Math.max(prevRev + 1, System.currentTimeMillis()));
+            o.remove(KEY_MEDIA_STAMP);
+        } catch (JSONException ignored) {
+        }
+    }
+
     private void updateConfigAndSave(ConfigMutation mutation) {
         synchronized (configWriteLock) {
             try {
+                refreshSnapshotFromFileForWrite();
                 JSONObject updated = copyConfig(getConfigSnapshot());
                 mutation.apply(updated);
+                prepareForSave(updated);
                 setConfigSnapshot(updated);
                 save(updated);
             } catch (JSONException e) {
@@ -253,7 +310,7 @@ public class ConfigManager {
         Set<String> targetPackages = new HashSet<>();
         if (explicitTargetPackage != null && !explicitTargetPackage.isEmpty()) {
             targetPackages.add(explicitTargetPackage);
-        } else {
+        } else if (isTargetFilterEnabled()) {
             targetPackages.addAll(getTargetPackages());
         }
 
@@ -383,9 +440,54 @@ public class ConfigManager {
         updateConfigAndSave(config -> config.put(key, value));
     }
 
+    /** Snapshot + its parsed target list as ONE immutable pair, so readers can never see a mismatch. */
+    private static final class TargetCache {
+        final JSONObject source;
+        final Set<String> packages;
+
+        TargetCache(JSONObject source, Set<String> packages) {
+            this.source = source;
+            this.packages = packages;
+        }
+    }
+
+    private volatile TargetCache targetCache = new TargetCache(null, new HashSet<>());
+
+    /** Cached per snapshot: this is called from hot paths (every acquired frame). Returns a copy. */
     public Set<String> getTargetPackages() {
+        JSONObject snap = getConfigSnapshot();
+        TargetCache c = targetCache;
+        if (c.source != snap) {
+            c = new TargetCache(snap, parseTargetPackages(snap));
+            targetCache = c;
+        }
+        return new HashSet<>(c.packages);
+    }
+
+    /** Legacy configs (no explicit flag) keep their old meaning: non-empty list => filter on. */
+    public boolean isTargetFilterEnabled() {
+        JSONObject snap = getConfigSnapshot();
+        if (snap.has(KEY_TARGET_FILTER_ENABLED)) {
+            return snap.optBoolean(KEY_TARGET_FILTER_ENABLED, false);
+        }
+        return !getTargetPackages().isEmpty();
+    }
+
+    public void setTargetFilterEnabled(boolean enabled) {
+        setBoolean(KEY_TARGET_FILTER_ENABLED, enabled);
+    }
+
+    /** Should media replacement be active for this package? */
+    public boolean isPackageSelected(String packageName) {
+        if (packageName == null || !isTargetFilterEnabled()) {
+            return true;
+        }
+        return getTargetPackages().contains(packageName);
+    }
+
+    private static Set<String> parseTargetPackages(JSONObject snapshot) {
         Set<String> packages = new HashSet<>();
-        JSONArray jsonArray = getConfigSnapshot().optJSONArray(KEY_TARGET_PACKAGES);
+        JSONArray jsonArray = snapshot.optJSONArray(KEY_TARGET_PACKAGES);
         if (jsonArray != null) {
             for (int i = 0; i < jsonArray.length(); i++) {
                 try {
@@ -404,6 +506,20 @@ public class ConfigManager {
             jsonArray.put(pkg);
         }
         updateConfigAndSave(config -> config.put(KEY_TARGET_PACKAGES, jsonArray));
+    }
+
+    /** Atomic add/remove on top of the freshest file content (safe against stale snapshots). */
+    public void updateTargetPackages(java.util.Collection<String> add, java.util.Collection<String> remove) {
+        updateConfigAndSave(config -> {
+            Set<String> set = parseTargetPackages(config);
+            if (add != null) set.addAll(add);
+            if (remove != null) set.removeAll(remove);
+            JSONArray arr = new JSONArray();
+            for (String p : set) {
+                arr.put(p);
+            }
+            config.put(KEY_TARGET_PACKAGES, arr);
+        });
     }
 
     public void addTargetPackage(String pkg) {
@@ -445,8 +561,17 @@ public class ConfigManager {
         }
         File configFile = new File(dir, CONFIG_FILE_NAME);
         try {
-            try (FileOutputStream fos = new FileOutputStream(configFile)) {
+            // Write to a temp file first so provider/hook readers never see a half-written config.
+            File tmp = new File(dir, CONFIG_FILE_NAME + ".tmp");
+            try (FileOutputStream fos = new FileOutputStream(tmp)) {
                 fos.write(snapshot.toString(4).getBytes(StandardCharsets.UTF_8));
+                fos.getFD().sync();
+            }
+            if (!tmp.renameTo(configFile)) {
+                try (FileOutputStream fos = new FileOutputStream(configFile)) {
+                    fos.write(snapshot.toString(4).getBytes(StandardCharsets.UTF_8));
+                }
+                tmp.delete();
             }
 
             // Set world-readable so hook processes (inside target apps) can read
@@ -502,6 +627,7 @@ public class ConfigManager {
     public void resetToDefault() {
         synchronized (configWriteLock) {
             JSONObject updated = new JSONObject();
+            prepareForSave(updated);
             setConfigSnapshot(updated);
             save(updated);
         }
@@ -514,6 +640,7 @@ public class ConfigManager {
     public void importConfig(String json) throws JSONException {
         synchronized (configWriteLock) {
             JSONObject updated = new JSONObject(json);
+            prepareForSave(updated);
             setConfigSnapshot(updated);
             save(updated);
         }
@@ -522,18 +649,50 @@ public class ConfigManager {
     /**
      * Parse config from JSON string and update memory cache.
      * Does NOT save to file to avoid EACCES errors in target app.
+     *
+     * @return false if the snapshot was ignored because it is older than what we already hold
+     *         (broadcasts can arrive late / out of order).
      */
-    public void updateConfigFromJSON(String json) {
+    public boolean updateConfigFromJSON(String json) {
         try {
             JSONObject updated = new JSONObject(json);
+            long incomingRev = updated.optLong(KEY_CONFIG_REV, 0L);
+            long currentRev = getConfigSnapshot().optLong(KEY_CONFIG_REV, 0L);
+            if (incomingRev != 0L && currentRev != 0L && incomingRev < currentRev) {
+                io.github.zensu357.camswap.utils.LogUtil.log(
+                        "【CS】忽略过期的配置广播 rev=" + incomingRev + " < " + currentRev);
+                return false;
+            }
+            // Keep synthetic keys the provider gave us if the broadcast does not carry them.
+            if (!updated.has(KEY_MEDIA_STAMP)) {
+                String stamp = getConfigSnapshot().optString(KEY_MEDIA_STAMP, null);
+                if (stamp != null) {
+                    updated.put(KEY_MEDIA_STAMP, stamp);
+                }
+            }
             setConfigSnapshot(updated);
             // Update timestamps to prevent reloadFromFile from overwriting
             long now = System.currentTimeMillis();
             lastLoadedTime = now;
             lastReloadTime.set(now);
-            io.github.zensu357.camswap.utils.LogUtil.log("【CS】已通过广播更新内存配置");
+            io.github.zensu357.camswap.utils.LogUtil.log("【CS】已通过广播更新内存配置 rev=" + incomingRev);
+            return true;
         } catch (JSONException e) {
             io.github.zensu357.camswap.utils.LogUtil.log("【CS】解析广播配置失败: " + e);
+            return false;
         }
+    }
+
+    /** Change the selection and bump the media revision in ONE save (one notification, one restart). */
+    public void setMediaSelection(String key, String value) {
+        updateConfigAndSave(config -> {
+            config.put(key, value);
+            config.put(KEY_MEDIA_REVISION, System.currentTimeMillis());
+        });
+    }
+
+    /** Mark the media as changed even though the selected file name stays the same. */
+    public void touchMediaRevision() {
+        setLong(KEY_MEDIA_REVISION, System.currentTimeMillis());
     }
 }
