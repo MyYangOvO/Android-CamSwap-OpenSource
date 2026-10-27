@@ -1,0 +1,4 @@
+git add -A
+git status
+git commit -m "fix: rebuild decoder on media switch + 30fps pump for QR scan"
+git push -u origin fix/qr-hotswap
