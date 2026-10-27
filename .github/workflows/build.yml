@@ -9,7 +9,11 @@ jobs:
         with:
           distribution: "temurin"
           java-version: "17"
-      - uses: android-actions/setup-android@v3
+   # 1. 强制所有 JavaScript Actions 使用 Node 24 运行，避免兼容性问题[reference:4][reference:5]
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+# 2. 升级到 v4 版本，该版本修复了 tools 包缺失的问题并适配了新环境
+uses: android-actions/setup-android@v4
       - run: chmod +x gradlew
       - run: ./gradlew assembleDebug
       - uses: actions/upload-artifact@v4
