@@ -26,7 +26,7 @@ public class Camera1Handler implements ICameraHandler {
     private static final Set<String> hookedPreviewCallbackClasses = Collections
             .newSetFromMap(new ConcurrentHashMap<String, Boolean>());
     private static final Object previewFrameLock = new Object();
-    private static final long PREVIEW_FRAME_WAIT_MS = 100L;
+    private static final long PREVIEW_FRAME_WAIT_MS = 300L;
 
     @Override
     public void init(final Api101PackageContext packageContext) {
@@ -545,6 +545,7 @@ public class Camera1Handler implements ICameraHandler {
         hookCameraMethod(classLoader, "stopPreview", new Class<?>[0], chain -> {
             LogUtil.log("【CS】Camera1 stopPreview，释放播放器资源");
             HookMain.playerManager.releaseCamera1Resources();
+HookMain.data_buffer=null; HookMain.camera_onPreviewFrame=null;
             return chain.proceed(toArgs(chain.getArgs()));
         });
     }
@@ -596,12 +597,12 @@ public class Camera1Handler implements ICameraHandler {
                 Object[] args = toArgs(chain.getArgs());
                 try {
                     Camera localcam = (Camera) args[1];
+String cs=VideoManager.getMediaStampKey(); if(HookMain.c1_last_media_stamp!=null&&!cs.equals(HookMain.c1_last_media_stamp)){HookMain.data_buffer=null;HookMain.camera_onPreviewFrame=null;} HookMain.c1_last_media_stamp=cs;
                     if (localcam.equals(HookMain.camera_onPreviewFrame)) {
                         awaitPreviewFrameBuffer();
                         if (HookMain.data_buffer != null) {
-                            System.arraycopy(HookMain.data_buffer, 0, args[0], 0,
-                                    Math.min(HookMain.data_buffer.length, ((byte[]) args[0]).length));
-                        }
+System.arraycopy(HookMain.data_buffer, 0, args[0], 0, Math.min(HookMain.data_buffer.length, ((byte[]) args[0]).length));
+} else { java.util.Arrays.fill((byte[]) args[0], (byte) 0x10); }
                     } else {
                         HookMain.camera_onPreviewFrame = localcam;
                         Camera.Parameters params = HookMain.camera_onPreviewFrame.getParameters();

@@ -62,6 +62,7 @@ public class HookMain {
     public static SurfaceHolder ori_holder;
     public static Camera mcamera1;
     public static volatile int mDisplayOrientation = 0;
+    public static volatile String c1_last_media_stamp = null;
 
     // Camera2 shared state
     public static int imageReaderFormat = 0;
@@ -133,6 +134,7 @@ public class HookMain {
             configWatcher = new ConfigWatcher(new ConfigWatcher.Callback() {
                 @Override
                 public void onMediaSourceChanged() {
+ HookMain.data_buffer=null; HookMain.camera_onPreviewFrame=null; HookMain.c1_last_media_stamp=null;
                     if (HookGuards.useRealCamera()) {
                         // Keep hooks installed; real camera takes effect when the target
                         // closes and reopens its camera session.
