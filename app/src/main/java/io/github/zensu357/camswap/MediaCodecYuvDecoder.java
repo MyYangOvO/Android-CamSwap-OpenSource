@@ -137,7 +137,7 @@ final class MediaCodecYuvDecoder {
                 if (running) {
                     LogUtil.log("【CS】YuvDecoder 异常: " + e);
                     // brief pause before retry
-                    try { Thread.sleep(500); } catch (InterruptedException ie) { break; }
+                    try { Thread.sleep(100); } catch (InterruptedException ie) { break; }
                 }
             }
             // Loop: seek back to beginning for looped playback
@@ -164,14 +164,14 @@ final class MediaCodecYuvDecoder {
                 extractor.setDataSource(videoPath);
             } else {
                 LogUtil.log("【CS】YuvDecoder: 无可用视频源");
-                try { Thread.sleep(1000); } catch (InterruptedException ignored) {}
+                try { Thread.sleep(100); } catch (InterruptedException ignored) {}
                 return;
             }
 
             int trackIndex = selectVideoTrack(extractor);
             if (trackIndex < 0) {
                 LogUtil.log("【CS】YuvDecoder: 未发现视频轨道");
-                try { Thread.sleep(500); } catch (InterruptedException ignored) {}
+                try { Thread.sleep(100); } catch (InterruptedException ignored) {}
                 return;
             }
             extractor.selectTrack(trackIndex);
@@ -230,7 +230,7 @@ final class MediaCodecYuvDecoder {
             // Self-healing: if the selected media changed (or was overwritten in place) while we are
             // looping the old file, leave so decodeLoop() reopens the new one.
             long nowMs = System.currentTimeMillis();
-            if (nowMs - lastKeyCheckMs >= 400L) {
+            if (nowMs - lastKeyCheckMs >= 100L) {
                 lastKeyCheckMs = nowMs;
                 String k = openedKey;
                 if (k != null && !k.equals(VideoManager.getMediaStampKey())) {
@@ -403,3 +403,4 @@ final class MediaCodecYuvDecoder {
         return -1;
     }
 }
+
