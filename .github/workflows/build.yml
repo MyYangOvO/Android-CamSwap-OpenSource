@@ -5,20 +5,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      
+      # 升级到最新的 setup-java@v5
+      - uses: actions/setup-java@v5
         with:
           distribution: "temurin"
           java-version: "17"
-      
-      # 👇 就是这里，替换成下面两行 👇
-      - name: Setup Android SDK
-        env:
-          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-        uses: android-actions/setup-android@v4
-      # 👆 替换结束 👆
-
+          
+      # setup-android 用 v3 其实就行，之前报错可能是偶发网络问题
+      - uses: android-actions/setup-android@v3
+        
       - run: chmod +x gradlew
       - run: ./gradlew assembleDebug
+      
       - uses: actions/upload-artifact@v4
         with:
           name: CamSwap-APK
