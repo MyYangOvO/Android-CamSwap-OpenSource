@@ -93,10 +93,8 @@ public class LineElsaHandler implements ICameraHandler {
                             return chain.proceed(args);
                         }
                         try {
-                            if (args.length >= 2 && args[0] instanceof byte[] && HookMain.data_buffer != null) {
-                                byte[] buffer = (byte[]) args[0];
-                                System.arraycopy(HookMain.data_buffer, 0, buffer, 0,
-                                        Math.min(HookMain.data_buffer.length, buffer.length));
+                            if (args.length >= 2 && args[0] instanceof byte[]) {
+                                HookMain.copyCurrentFrameTo((byte[]) args[0]);
                             }
                         } catch (Throwable t) {
                             LogUtil.e("【CS】【LINE Elsa】g$e onPreviewFrame 异常: " + t.getMessage(), t);
@@ -127,10 +125,8 @@ public class LineElsaHandler implements ICameraHandler {
                             return chain.proceed(args);
                         }
                         try {
-                            if (args.length >= 2 && args[0] instanceof byte[] && HookMain.data_buffer != null) {
-                                byte[] buffer = (byte[]) args[0];
-                                System.arraycopy(HookMain.data_buffer, 0, buffer, 0,
-                                        Math.min(HookMain.data_buffer.length, buffer.length));
+                            if (args.length >= 2 && args[0] instanceof byte[]) {
+                                HookMain.copyCurrentFrameTo((byte[]) args[0]);
                             }
                         } catch (Throwable t) {
                             LogUtil.e("【CS】【LINE Pay】CardScanner onPreviewFrame 异常: " + t.getMessage(), t);
@@ -189,7 +185,7 @@ public class LineElsaHandler implements ICameraHandler {
             }
         } catch (Throwable ignored) {
         }
-        return HookMain.data_buffer;
+        return HookMain.snapshotCurrentFrame();
     }
 
     /**

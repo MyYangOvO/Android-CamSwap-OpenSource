@@ -349,7 +349,7 @@ public class Camera1Handler implements ICameraHandler {
     private byte[] buildPhotoFakeJpeg(Camera camera) {
         ensureCameraSize(camera);
 
-        byte[] nv21 = HookMain.data_buffer;
+        byte[] nv21 = HookMain.snapshotCurrentFrame();
         byte[] jpegData = null;
 
         if (nv21 != null && nv21.length >= 1 && !MediaCropUtil.isCenterCrop() && !MediaCropUtil.isContain()) {
@@ -503,6 +503,7 @@ public class Camera1Handler implements ICameraHandler {
         hookCameraMethod(classLoader, "setPreviewCallbackWithBuffer",
                 new Class<?>[] { Camera.PreviewCallback.class }, chain -> {
                     Object[] args = toArgs(chain.getArgs());
+                    logCallbackRegistration("setPreviewCallbackWithBuffer", args[0]);
                     if (args[0] != null) {
                         processCallbackRegistration(args[0]);
                     }
@@ -523,6 +524,7 @@ public class Camera1Handler implements ICameraHandler {
     private void hookSetPreviewCallback(ClassLoader classLoader) {
         hookCameraMethod(classLoader, "setPreviewCallback", new Class<?>[] { Camera.PreviewCallback.class }, chain -> {
             Object[] args = toArgs(chain.getArgs());
+            logCallbackRegistration("setPreviewCallback", args[0]);
             if (args[0] != null) {
                 processCallbackRegistration(args[0]);
             }
@@ -534,6 +536,7 @@ public class Camera1Handler implements ICameraHandler {
         hookCameraMethod(classLoader, "setOneShotPreviewCallback", new Class<?>[] { Camera.PreviewCallback.class },
                 chain -> {
                     Object[] args = toArgs(chain.getArgs());
+                    logCallbackRegistration("setOneShotPreviewCallback", args[0]);
                     if (args[0] != null) {
                         processCallbackRegistration(args[0]);
                     }
@@ -541,11 +544,17 @@ public class Camera1Handler implements ICameraHandler {
                 });
     }
 
+    private static void logCallbackRegistration(String methodName, Object callback) {
+        String callbackName = callback == null ? "null" : callback.getClass().getName();
+        LogUtil.log("【CS】【Camera1】回调注册：" + methodName + " -> " + callbackName);
+    }
+
     private void hookStopPreview(ClassLoader classLoader) {
         hookCameraMethod(classLoader, "stopPreview", new Class<?>[0], chain -> {
             LogUtil.log("【CS】Camera1 stopPreview，释放播放器资源");
             HookMain.playerManager.releaseCamera1Resources();
-HookMain.data_buffer=null; HookMain.camera_onPreviewFrame=null;
+            HookMain.stopFrameDecoder();
+            HookMain.camera_onPreviewFrame = null;
             return chain.proceed(toArgs(chain.getArgs()));
         });
     }
@@ -554,6 +563,7 @@ HookMain.data_buffer=null; HookMain.camera_onPreviewFrame=null;
         hookCameraMethod(classLoader, "release", new Class<?>[0], chain -> {
             LogUtil.log("【CS】Camera1 release，释放播放器资源");
             HookMain.playerManager.releaseCamera1Resources();
+            HookMain.stopFrameDecoder();
             HookMain.origin_preview_camera = null;
             HookMain.start_preview_camera = null;
             HookMain.camera_onPreviewFrame = null;
@@ -589,7 +599,6 @@ HookMain.data_buffer=null; HookMain.camera_onPreviewFrame=null;
         if (!hookedPreviewCallbackClasses.add(previewCallbackClass.getName())) {
             return;
         }
-        boolean needStop = HookGuards.shouldBypass(null, HookGuards.getCurrentVideoFile());
         try {
             Method method = previewCallbackClass.getDeclaredMethod("onPreviewFrame", byte[].class, Camera.class);
             method.setAccessible(true);
@@ -597,13 +606,26 @@ HookMain.data_buffer=null; HookMain.camera_onPreviewFrame=null;
                 Object[] args = toArgs(chain.getArgs());
                 try {
                     Camera localcam = (Camera) args[1];
-String cs=VideoManager.getMediaStampKey(); if(HookMain.c1_last_media_stamp!=null&&!cs.equals(HookMain.c1_last_media_stamp)){HookMain.data_buffer=null;HookMain.camera_onPreviewFrame=null;} HookMain.c1_last_media_stamp=cs;
+                    boolean needStop = HookGuards.shouldBypass(null, HookGuards.getCurrentVideoFile());
+                    if (needStop) {
+                        // Real-camera/bypass mode must not receive synthetic frame bytes.
+                        return chain.proceed(args);
+                    }
+                    String mediaStamp = VideoManager.getMediaStampKey();
+                    if (HookMain.c1_last_media_stamp != null
+                            && !java.util.Objects.equals(mediaStamp, HookMain.c1_last_media_stamp)) {
+                        HookMain.clearFrameBuffer();
+                        HookMain.camera_onPreviewFrame = null;
+                    }
+                    HookMain.c1_last_media_stamp = mediaStamp;
                     if (localcam.equals(HookMain.camera_onPreviewFrame)) {
                         awaitPreviewFrameBuffer();
-                        if (HookMain.data_buffer != null) {
-System.arraycopy(HookMain.data_buffer, 0, args[0], 0, Math.min(HookMain.data_buffer.length, ((byte[]) args[0]).length));
-} else { java.util.Arrays.fill((byte[]) args[0], (byte) 0x10); }
+                        if (HookMain.copyCurrentFrameTo((byte[]) args[0]) == 0) {
+                            java.util.Arrays.fill((byte[]) args[0], (byte) 0x10);
+                        }
                     } else {
+                        // A newly active Camera instance must not inherit the previous camera's last frame.
+                        HookMain.clearFrameBuffer();
                         HookMain.camera_onPreviewFrame = localcam;
                         Camera.Parameters params = HookMain.camera_onPreviewFrame.getParameters();
                         Camera.Size previewSize = params != null ? params.getPreviewSize() : null;
@@ -633,9 +655,8 @@ System.arraycopy(HookMain.data_buffer, 0, args[0], 0, Math.min(HookMain.data_buf
                                 LogUtil.log("【CS】" + t);
                             }
                             awaitPreviewFrameBuffer();
-                            if (HookMain.data_buffer != null) {
-                                System.arraycopy(HookMain.data_buffer, 0, args[0], 0,
-                                        Math.min(HookMain.data_buffer.length, ((byte[]) args[0]).length));
+                            if (HookMain.copyCurrentFrameTo((byte[]) args[0]) == 0) {
+                                java.util.Arrays.fill((byte[]) args[0], (byte) 0x10);
                             }
                         }
                     }
@@ -650,11 +671,11 @@ System.arraycopy(HookMain.data_buffer, 0, args[0], 0, Math.min(HookMain.data_buf
     }
 
     private static void awaitPreviewFrameBuffer() {
-        if (HookMain.data_buffer != null) {
+        if (HookMain.hasCurrentFrame()) {
             return;
         }
         synchronized (previewFrameLock) {
-            if (HookMain.data_buffer != null) {
+            if (HookMain.hasCurrentFrame()) {
                 return;
             }
             try {

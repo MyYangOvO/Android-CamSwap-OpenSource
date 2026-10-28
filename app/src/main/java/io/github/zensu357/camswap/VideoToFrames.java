@@ -16,6 +16,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.Arrays;
 
 import io.github.zensu357.camswap.utils.LogUtil;
 
@@ -29,14 +30,16 @@ public class VideoToFrames implements Runnable {
     private final int decodeColorFormat = MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible;
 
     private LinkedBlockingQueue<byte[]> mQueue;
-    private OutputImageFormat outputImageFormat;
-    private volatile boolean stopDecode = false;
+    private volatile OutputImageFormat outputImageFormat;
+    private volatile boolean stopDecode = true;
+    private final Object lifecycleLock = new Object();
+    private static final long STOP_TIMEOUT_MS = 2000L;
     private int mVideoRotation = 0;
 
     private String videoFilePath;
     private Throwable throwable;
     private Thread childThread;
-    private Surface play_surf;
+    private volatile Surface play_surf;
 
     private Callback callback;
 
@@ -67,44 +70,99 @@ public class VideoToFrames implements Runnable {
     }
 
     public void stopDecode() {
-        stopDecode = true;
-        if (childThread != null) {
-            try {
-                childThread.join(500);
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
+        if (!stopDecodeAndWaitForShutdown()) {
+            LogUtil.log("【CS】【decoder】停止超时；为避免新旧解码线程并行，不启动新的解码任务");
         }
     }
 
+    public boolean stopDecodeAndWaitForShutdown() {
+        return stopDecodeAndWait(STOP_TIMEOUT_MS);
+    }
+
+    private boolean stopDecodeAndWait(long timeoutMs) {
+        final Thread worker;
+        synchronized (lifecycleLock) {
+            stopDecode = true;
+            worker = childThread;
+            if (worker == null) return true;
+            worker.interrupt();
+        }
+
+        if (worker == Thread.currentThread()) {
+            return false;
+        }
+
+        long deadline = System.currentTimeMillis() + Math.max(0L, timeoutMs);
+        while (worker.isAlive()) {
+            long remaining = deadline - System.currentTimeMillis();
+            if (remaining <= 0L) break;
+            try {
+                worker.join(remaining);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+
+        boolean stopped = !worker.isAlive();
+        synchronized (lifecycleLock) {
+            if (stopped && childThread == worker) childThread = null;
+        }
+        return stopped;
+    }
+
     public void reset(String videoFilePath) throws Throwable {
-        stopDecode();
-        stopDecode = false;
-        this.videoFd = null;
-        this.videoPfd = null;
-        this.videoFilePath = videoFilePath;
-        childThread = null;
-        decode(videoFilePath);
+        if (!stopDecodeAndWait(STOP_TIMEOUT_MS)) {
+            throw new IllegalStateException("Previous decoder thread did not stop; refusing overlapping reset");
+        }
+        synchronized (lifecycleLock) {
+            this.videoFd = null;
+            this.videoPfd = null;
+            this.videoFilePath = videoFilePath;
+            this.throwable = null;
+            startWorkerLocked();
+        }
     }
 
     public void reset(android.os.ParcelFileDescriptor pfd) throws Throwable {
-        stopDecode();
-        stopDecode = false;
-        this.videoFilePath = null;
-        this.videoPfd = pfd;
-        this.videoFd = pfd.getFileDescriptor();
-        childThread = null;
-        decode(pfd);
+        if (pfd == null) throw new IllegalArgumentException("pfd == null");
+        if (!stopDecodeAndWait(STOP_TIMEOUT_MS)) {
+            throw new IllegalStateException("Previous decoder thread did not stop; refusing overlapping reset");
+        }
+        synchronized (lifecycleLock) {
+            this.videoFilePath = null;
+            this.videoPfd = pfd;
+            this.videoFd = pfd.getFileDescriptor();
+            this.throwable = null;
+            startWorkerLocked();
+        }
     }
 
     public void decode(String videoFilePath) throws Throwable {
-        this.videoFilePath = videoFilePath;
-        if (childThread == null) {
-            childThread = new Thread(this, "decode");
-            childThread.start();
-            if (throwable != null) {
-                throw throwable;
-            }
+        synchronized (lifecycleLock) {
+            if (childThread != null && childThread.isAlive()) return;
+            this.videoFilePath = videoFilePath;
+            this.videoFd = null;
+            this.videoPfd = null;
+            this.throwable = null;
+            startWorkerLocked();
+        }
+    }
+
+    private void startWorkerLocked() {
+        stopDecode = false;
+        Thread worker = new Thread(this, "CamSwap-VideoDecoder");
+        worker.setPriority(Thread.NORM_PRIORITY - 1);
+        childThread = worker;
+        worker.start();
+    }
+
+    /** Publish only while this decoder is still the active producer. */
+    private boolean publishFrameIfRunning(byte[] frame, int width, int height) {
+        synchronized (lifecycleLock) {
+            if (stopDecode || childThread != Thread.currentThread()) return false;
+            HookMain.publishFrame(frame, width, height);
+            return true;
         }
     }
 
@@ -112,37 +170,55 @@ public class VideoToFrames implements Runnable {
     private android.os.ParcelFileDescriptor videoPfd;
 
     public void decode(android.os.ParcelFileDescriptor pfd) throws Throwable {
-        this.videoPfd = pfd;
-        this.videoFd = pfd.getFileDescriptor();
-        if (childThread == null) {
-            childThread = new Thread(this, "decode");
-            childThread.start();
-            if (throwable != null) {
-                throw throwable;
-            }
+        if (pfd == null) throw new IllegalArgumentException("pfd == null");
+        synchronized (lifecycleLock) {
+            if (childThread != null && childThread.isAlive()) return;
+            this.videoPfd = pfd;
+            this.videoFd = pfd.getFileDescriptor();
+            this.videoFilePath = null;
+            this.throwable = null;
+            startWorkerLocked();
         }
     }
 
     public void decode(java.io.FileDescriptor fd) throws Throwable {
-        this.videoFd = fd;
-        if (childThread == null) {
-            childThread = new Thread(this, "decode");
-            childThread.start();
-            if (throwable != null) {
-                throw throwable;
-            }
+        if (fd == null || !fd.valid()) throw new IllegalArgumentException("Invalid file descriptor");
+        synchronized (lifecycleLock) {
+            if (childThread != null && childThread.isAlive()) return;
+            this.videoFd = fd;
+            this.videoPfd = null;
+            this.videoFilePath = null;
+            this.throwable = null;
+            startWorkerLocked();
         }
     }
 
+    @Override
     public void run() {
+        Thread thisWorker = Thread.currentThread();
         try {
-            if (videoFd != null) {
-                videoDecode(videoFd);
+            java.io.FileDescriptor fd;
+            String path;
+            synchronized (lifecycleLock) {
+                fd = videoFd;
+                path = videoFilePath;
+            }
+            if (stopDecode) return;
+            if (fd != null) {
+                videoDecode(fd);
+            } else if (path != null && !path.trim().isEmpty()) {
+                videoDecode(path);
             } else {
-                videoDecode(videoFilePath);
+                throw new IllegalStateException("No video source configured");
             }
         } catch (Throwable t) {
             throwable = t;
+            LogUtil.log("【CS】【decoder】解码线程异常: " + t);
+        } finally {
+            synchronized (lifecycleLock) {
+                stopDecode = true;
+                if (childThread == thisWorker) childThread = null;
+            }
         }
     }
 
@@ -368,75 +444,76 @@ public class VideoToFrames implements Runnable {
                     if (configSurface == null) {
                         // 内存解码模式：获取帧数据，做旋转处理
                         Image image = decoder.getOutputImage(outputBufferId);
-
-                        // 动态重新计算旋转角度（配置可能被通知栏按钮实时更新）
-                        int currentManualOffset = 0;
-                        try {
-                            currentManualOffset = HookMain.getConfig().getInt(ConfigManager.KEY_VIDEO_ROTATION_OFFSET,
-                                    0);
-                        } catch (Exception ignored) {
-                        }
-                        int effectiveRotation = (mVideoRotation + currentManualOffset + 360) % 360;
-
-                        boolean needSwapDimensions = (effectiveRotation == 90 || effectiveRotation == 270);
-                        int finalWidth = needSwapDimensions ? height : width;
-                        int finalHeight = needSwapDimensions ? width : height;
-
-                        byte[] rawData = getDataFromImage(image, COLOR_FormatNV21);
-                        byte[] processedData;
-
-                        // 1. Rotation
-                        if (effectiveRotation != 0) {
-                            processedData = rotateNV21(rawData, width, height, effectiveRotation);
-                        } else {
-                            processedData = rawData;
-                        }
-
-                        // 2. Scaling (if target size is set and mismatches)
-                        if (targetWidth > 0 && targetHeight > 0
-                                && (finalWidth != targetWidth || finalHeight != targetHeight)) {
-                            // LogUtil.log("【CS】Scaling frame from " + finalWidth + "x" + finalHeight + " to
-                            // " + targetWidth + "x" + targetHeight);
-                            processedData = cropAndScaleNV21(processedData, finalWidth, finalHeight, targetWidth,
-                                    targetHeight);
-                            finalWidth = targetWidth;
-                            finalHeight = targetHeight;
-                        }
-
-                        if (mQueue != null) {
+                        if (image != null) {
+                            byte[] rawData = null;
+                            byte[] processedData = null;
                             try {
-                                mQueue.put(processedData);
-                            } catch (InterruptedException e) {
-                                LogUtil.log("【CS】" + e.toString());
-                                BytePool.release(processedData);
+                                // 动态重新计算旋转角度（配置可能被通知栏按钮实时更新）
+                                int currentManualOffset = 0;
+                                try {
+                                    currentManualOffset = HookMain.getConfig().getInt(
+                                            ConfigManager.KEY_VIDEO_ROTATION_OFFSET, 0);
+                                } catch (Exception ignored) {
+                                }
+                                int effectiveRotation = (mVideoRotation + currentManualOffset + 360) % 360;
+
+                                boolean needSwapDimensions = (effectiveRotation == 90 || effectiveRotation == 270);
+                                int finalWidth = needSwapDimensions ? height : width;
+                                int finalHeight = needSwapDimensions ? width : height;
+
+                                rawData = getDataFromImage(image, COLOR_FormatNV21);
+                                processedData = rawData;
+
+                                // 1. Rotate only when needed.
+                                if (effectiveRotation != 0) {
+                                    processedData = rotateNV21(rawData, width, height, effectiveRotation);
+                                }
+
+                                // 2. Scale to the camera's active preview dimensions when configured.
+                                if (targetWidth > 0 && targetHeight > 0
+                                        && (finalWidth != targetWidth || finalHeight != targetHeight)) {
+                                    byte[] scaledData = cropAndScaleNV21(processedData, finalWidth, finalHeight,
+                                            targetWidth, targetHeight);
+                                    if (processedData != rawData) BytePool.release(processedData);
+                                    processedData = scaledData;
+                                    finalWidth = targetWidth;
+                                    finalHeight = targetHeight;
+                                }
+
+                                // If stop was requested while this frame was converting, don't leak it downstream.
+                                if (!stopDecode) {
+                                    // Async queue consumers own a copy, not the scratch array we recycle below.
+                                    if (mQueue != null) {
+                                        try {
+                                            mQueue.put(Arrays.copyOf(processedData, processedData.length));
+                                        } catch (InterruptedException e) {
+                                            Thread.currentThread().interrupt();
+                                            LogUtil.log("【CS】【decoder】帧队列等待被中断");
+                                        }
+                                    }
+
+                                    if (outputImageFormat != null
+                                            && publishFrameIfRunning(processedData, finalWidth, finalHeight)) {
+                                        Camera1Handler.notifyPreviewFrameBufferReady();
+                                    }
+
+                                    // Rendering is synchronous, so the scratch array remains valid until this returns.
+                                    if (play_surf != null && !stopDecode) {
+                                        try {
+                                            renderNV21ToSurface(processedData, finalWidth, finalHeight, play_surf);
+                                        } catch (Exception e) {
+                                            LogUtil.log("【CS】渲染到Surface失败: " + e);
+                                        }
+                                    }
+                                }
+                            } finally {
+                                if (processedData != null && processedData != rawData) {
+                                    BytePool.release(processedData);
+                                }
+                                if (rawData != null) BytePool.release(rawData);
+                                image.close();
                             }
                         }
-                        if (outputImageFormat != null) {
-                            byte[] old = HookMain.data_buffer;
-                            HookMain.data_buffer = processedData;
-                            Camera1Handler.notifyPreviewFrameBufferReady();
-                            // Do NOT overwrite mwidth/mhight if we are respecting target size
-                            // If target size was set, these should match HookMain's expectations already
-                            if (targetWidth == 0 || targetHeight == 0) {
-                                HookMain.mwidth = finalWidth;
-                                HookMain.mhight = finalHeight;
-                            }
-
-                            if (old != null && old.length > 1 && old != processedData) {
-                                BytePool.release(old);
-                            }
-                        }
-
-                        // 如果有 play_surf（Camera2 reader Surface），将旋转后的帧渲染上去
-                        if (play_surf != null) {
-                            try {
-                                renderNV21ToSurface(processedData, finalWidth, finalHeight, play_surf);
-                            } catch (Exception e) {
-                                LogUtil.log("【CS】渲染到Surface失败: " + e.toString());
-                            }
-                        }
-
-                        image.close();
                     }
                     long sleepTime = info.presentationTimeUs / 1000 - (System.currentTimeMillis() - startWhen);
                     if (sleepTime > 0) {
@@ -456,8 +533,8 @@ public class VideoToFrames implements Runnable {
         }
     }
 
-    private int targetWidth = 0;
-    private int targetHeight = 0;
+    private volatile int targetWidth = 0;
+    private volatile int targetHeight = 0;
 
     public void setTargetSize(int w, int h) {
         this.targetWidth = w;

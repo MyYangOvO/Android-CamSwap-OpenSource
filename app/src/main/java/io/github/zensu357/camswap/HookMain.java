@@ -50,13 +50,82 @@ public class HookMain {
     public static Camera origin_preview_camera;
     public static Camera camera_onPreviewFrame;
     public static Camera start_preview_camera;
+    /**
+     * Shared Camera1 preview frame. Readers must use the copy/snapshot helpers below;
+     * publishing and copying under one lock prevents partially updated or recycled frames.
+     */
     public static volatile byte[] data_buffer;
+    private static final Object FRAME_BUFFER_LOCK = new Object();
     public static byte[] input;
-    public static int mhight;
-    public static int mwidth;
+    public static volatile int mhight;
+    public static volatile int mwidth;
+
+    public static void publishFrame(byte[] frame, int width, int height) {
+        if (frame == null || frame.length == 0) {
+            clearFrameBuffer();
+            return;
+        }
+        synchronized (FRAME_BUFFER_LOCK) {
+            if (data_buffer == null || data_buffer.length != frame.length) {
+                data_buffer = new byte[frame.length];
+            }
+            System.arraycopy(frame, 0, data_buffer, 0, frame.length);
+            mwidth = width;
+            mhight = height;
+        }
+    }
+
+    /** Copies a coherent frame into a caller-owned destination array. */
+    public static int copyCurrentFrameTo(byte[] destination) {
+        if (destination == null) return 0;
+        synchronized (FRAME_BUFFER_LOCK) {
+            byte[] current = data_buffer;
+            if (current == null) return 0;
+            int length = Math.min(current.length, destination.length);
+            System.arraycopy(current, 0, destination, 0, length);
+            return length;
+        }
+    }
+
+    /** Returns an independent snapshot suitable for image conversion or asynchronous use. */
+    public static byte[] snapshotCurrentFrame() {
+        synchronized (FRAME_BUFFER_LOCK) {
+            return data_buffer == null ? null : java.util.Arrays.copyOf(data_buffer, data_buffer.length);
+        }
+    }
+
+    public static boolean hasCurrentFrame() {
+        synchronized (FRAME_BUFFER_LOCK) {
+            return data_buffer != null && data_buffer.length > 0;
+        }
+    }
+
+    public static void clearFrameBuffer() {
+        synchronized (FRAME_BUFFER_LOCK) {
+            data_buffer = null;
+        }
+    }
+
+    /** Stop the Camera1 frame producer before invalidating its published frame. */
+    public static boolean stopFrameDecoder() {
+        VideoToFrames decoder = hw_decode_obj;
+        boolean stopped = true;
+        if (decoder != null) {
+            stopped = decoder.stopDecodeAndWaitForShutdown();
+            if (stopped && hw_decode_obj == decoder) {
+                hw_decode_obj = null;
+            }
+            if (!stopped) {
+                io.github.zensu357.camswap.utils.LogUtil.log(
+                        "【CS】【decoder】旧解码线程仍在运行；保留引用以阻止并行解码");
+            }
+        }
+        clearFrameBuffer();
+        return stopped;
+    }
     public static boolean is_someone_playing;
     public static boolean is_hooked;
-    public static VideoToFrames hw_decode_obj;
+    public static volatile VideoToFrames hw_decode_obj;
     public static SurfaceTexture c1_fake_texture;
     public static Surface c1_fake_surface;
     public static SurfaceHolder ori_holder;
@@ -134,7 +203,9 @@ public class HookMain {
             configWatcher = new ConfigWatcher(new ConfigWatcher.Callback() {
                 @Override
                 public void onMediaSourceChanged() {
- HookMain.data_buffer=null; HookMain.camera_onPreviewFrame=null; HookMain.c1_last_media_stamp=null;
+                    HookMain.stopFrameDecoder();
+                    HookMain.camera_onPreviewFrame = null;
+                    HookMain.c1_last_media_stamp = null;
                     if (HookGuards.useRealCamera()) {
                         // Keep hooks installed; real camera takes effect when the target
                         // closes and reopens its camera session.
